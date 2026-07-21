@@ -92,6 +92,131 @@ TEST(AC_CustomControl_INDI, yaw_deprioritized)
     EXPECT_LT(wy.z, wr.x);  // yaw correction weaker than tilt at equal error
 }
 
+// ---- Task 3: INDI rate loop (angular-accel + phase-matched actuator filter +
+// diagonal-G1 inversion) --------------------------------------------------
+// Oracle: /tmp/s3a_dump_inner_oracle.py — a Layer-A reduction of
+// indi_harness.inner_loop.InnerLoopINDI stepped against a toy first-order-motor
+// plant (mirroring tests/test_inner_loop.py), with a Python replica of
+// ArduPilot's DigitalBiquadFilter so the trajectories match to < 1e-3.
+
+namespace {
+struct ToyOut { Vector3f u[250]; Vector3f w[250]; };
+
+// Toy first-order-motor plant: the loop commands actuator torque u_cmd; the
+// motor lags toward it (tau); the plant produces angular accel = G1 * u_act.
+void run_toy(AC_INDI_RateLoop &loop, float tau, const Vector3f &g1,
+             const Vector3f &wd, int n, ToyOut &out)
+{
+    const float dt = 1.0f / 500.0f;
+    Vector3f om, u_act;
+    for (int k = 0; k < n; k++) {
+        Vector3f dwp, dwf, uf;
+        bool sat;
+        const Vector3f uc = loop.step(dt, om, u_act, wd, Vector3f(), 1e9f,
+                                      dwp, dwf, uf, sat);
+        u_act += (uc - u_act) * (dt / tau);
+        om += Vector3f(g1.x * u_act.x, g1.y * u_act.y, g1.z * u_act.z) * dt;
+        out.u[k] = uc;
+        out.w[k] = om;
+    }
+}
+struct Sample { int k; float v[3]; };
+} // namespace
+
+TEST(AC_CustomControl_INDI, indi_rate_step_matches_oracle)
+{
+    AC_INDI_RateLoop loop;
+    loop.configure(25.0f, 500.0f, Vector3f(20, 20, 10), Vector3f(800, 800, 300));
+    static ToyOut out;
+    run_toy(loop, 0.02f, Vector3f(800, 800, 300), Vector3f(0.5f, -0.3f, 0.2f), 250, out);
+
+    const Sample u_ref[] = {
+        {  0, {0.012500000f, -0.007500000f, 0.006666667f}},
+        { 25, {0.005580700f, -0.003348420f, 0.004642071f}},
+        { 50, {0.000844823f, -0.000506894f, 0.002546248f}},
+        { 75, {-0.000136898f, 0.000082139f, 0.001325922f}},
+        {100, {-0.000103387f, 0.000062032f, 0.000681197f}},
+        {125, {-0.000022448f, 0.000013469f, 0.000348691f}},
+        {150, {0.000000414f, -0.000000249f, 0.000178309f}},
+        {175, {0.000001741f, -0.000001045f, 0.000091157f}},
+        {200, {0.000000514f, -0.000000308f, 0.000046598f}},
+        {225, {0.000000035f, -0.000000021f, 0.000023820f}},
+    };
+    for (const auto &s : u_ref) {
+        EXPECT_NEAR(out.u[s.k].x, s.v[0], 1e-3f) << "u k=" << s.k << " x";
+        EXPECT_NEAR(out.u[s.k].y, s.v[1], 1e-3f) << "u k=" << s.k << " y";
+        EXPECT_NEAR(out.u[s.k].z, s.v[2], 1e-3f) << "u k=" << s.k << " z";
+    }
+    const Sample w_ref[] = {
+        {  0, {0.002000000f, -0.001200000f, 0.000400000f}},
+        { 25, {0.288553601f, -0.173132160f, 0.063738461f}},
+        { 50, {0.469741489f, -0.281844894f, 0.125539086f}},
+        { 75, {0.505733522f, -0.303440113f, 0.161262288f}},
+        {100, {0.503962157f, -0.302377294f, 0.180103433f}},
+        {125, {0.500825307f, -0.300495184f, 0.189816057f}},
+        {150, {0.499973204f, -0.299983922f, 0.194792353f}},
+        {175, {0.499932386f, -0.299959432f, 0.197337719f}},
+        {200, {0.499980816f, -0.299988489f, 0.198639072f}},
+        {225, {0.499998865f, -0.299999319f, 0.199304322f}},
+    };
+    for (const auto &s : w_ref) {
+        EXPECT_NEAR(out.w[s.k].x, s.v[0], 1e-3f) << "w k=" << s.k << " x";
+        EXPECT_NEAR(out.w[s.k].y, s.v[1], 1e-3f) << "w k=" << s.k << " y";
+        EXPECT_NEAR(out.w[s.k].z, s.v[2], 1e-3f) << "w k=" << s.k << " z";
+    }
+}
+
+// The S2 synchronization lesson as a firmware regression: the angular-accel
+// filter and the actuator-state filter MUST share one cutoff (matched group
+// delay). Structural: the production configure() builds both filters with the
+// same cutoff. Behavioural: a deliberately mismatched loop tracks far worse --
+// mismatched steady-state rate error is many times the matched error.
+TEST(AC_CustomControl_INDI, indi_phase_match)
+{
+    const Vector3f g1(800, 800, 300), kw(20, 20, 10), wd(0.5f, -0.3f, 0.2f);
+
+    AC_INDI_RateLoop matched;
+    matched.configure(25.0f, 500.0f, kw, g1);
+    EXPECT_FLOAT_EQ(matched.domega_cutoff(), matched.uact_cutoff());  // structural
+
+    AC_INDI_RateLoop mismatched;
+    mismatched.configure_split(25.0f, 2.0f, 500.0f, kw, g1);
+    EXPECT_GT(fabsf(mismatched.domega_cutoff() - mismatched.uact_cutoff()), 1.0f);
+
+    static ToyOut om, ox;
+    run_toy(matched, 0.02f, g1, wd, 250, om);
+    run_toy(mismatched, 0.02f, g1, wd, 250, ox);
+
+    float em = 0.0f, ex = 0.0f;
+    for (int k = 230; k < 250; k++) {
+        em += (om.w[k] - wd).length();
+        ex += (ox.w[k] - wd).length();
+    }
+    em /= 20.0f;
+    ex /= 20.0f;
+    EXPECT_LT(em, 1e-3f);           // matched: tight rate tracking
+    EXPECT_GT(ex, 10.0f * em);      // mismatched: error grows (>10x), the S2 tell
+}
+
+// update() returns the INDI increment, and saturation is flagged with
+// prioritized yaw-shed (never silently wrapped).
+TEST(AC_CustomControl_INDI, indi_saturation_sheds_yaw)
+{
+    AC_INDI_RateLoop loop;
+    loop.configure(25.0f, 500.0f, Vector3f(20, 20, 10), Vector3f(800, 800, 300));
+    Vector3f dwp, dwf, uf;
+    bool sat;
+    // gyro=0, u_act=0, large desired rate, tight limit: raw u would be
+    // (0.125, -0.1, 0.1); shed yaw -> 0, clip roll/pitch -> (+0.1, -0.1, 0).
+    const Vector3f uc = loop.step(1.0f / 500.0f, Vector3f(), Vector3f(),
+                                  Vector3f(5.0f, -4.0f, 3.0f), Vector3f(), 0.1f,
+                                  dwp, dwf, uf, sat);
+    EXPECT_TRUE(sat);
+    EXPECT_NEAR(uc.x, 0.1f, 1e-6f);
+    EXPECT_NEAR(uc.y, -0.1f, 1e-6f);
+    EXPECT_NEAR(uc.z, 0.0f, 1e-6f);
+}
+
 #endif  // AP_CUSTOMCONTROL_INDI_ENABLED
 
 AP_GTEST_MAIN()

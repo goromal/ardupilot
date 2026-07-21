@@ -42,6 +42,18 @@ const AP_Param::GroupInfo AC_CustomControl_INDI::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("G1_YAW", 5, AC_CustomControl_INDI, _g1_yaw, 1.0f),
 
+    // @Param: KW_RP
+    // @DisplayName: INDI roll/pitch rate-error gain
+    // @Description: Rate-error to desired-angular-acceleration gain kw for the roll and pitch axes (1/s).
+    // @User: Standard
+    AP_GROUPINFO("KW_RP", 6, AC_CustomControl_INDI, _kw_rp, 20.0f),
+
+    // @Param: KW_YAW
+    // @DisplayName: INDI yaw rate-error gain
+    // @Description: Rate-error to desired-angular-acceleration gain kw for the yaw axis (1/s).
+    // @User: Standard
+    AP_GROUPINFO("KW_YAW", 7, AC_CustomControl_INDI, _kw_yaw, 10.0f),
+
     AP_GROUPEND
 };
 
@@ -145,23 +157,127 @@ Vector3f AC_CustomControl_INDI::attitude_rate_ref(const Quaternion &q, const Qua
         float(kt*lr[2] + ky*ly[2] + (double)w_ff.z));
 }
 
+// --- Layer-A INDI rate loop (Task 3) ---------------------------------------
+
+void AC_INDI_RateLoop::configure(float cutoff_hz, float sample_freq,
+                                 const Vector3f &kw, const Vector3f &g1)
+{
+    // One cutoff, both filters -> matched group delay (phase-matching rule).
+    configure_split(cutoff_hz, cutoff_hz, sample_freq, kw, g1);
+}
+
+void AC_INDI_RateLoop::configure_split(float cutoff_domega_hz, float cutoff_uact_hz,
+                                       float sample_freq, const Vector3f &kw,
+                                       const Vector3f &g1)
+{
+    _f_domega.set_cutoff_frequency(sample_freq, cutoff_domega_hz);
+    _f_uact.set_cutoff_frequency(sample_freq, cutoff_uact_hz);
+    _kw = kw;
+    _g1_inv = Vector3f(is_zero(g1.x) ? 0.0f : 1.0f / g1.x,
+                       is_zero(g1.y) ? 0.0f : 1.0f / g1.y,
+                       is_zero(g1.z) ? 0.0f : 1.0f / g1.z);
+    reset();
+}
+
+void AC_INDI_RateLoop::reset()
+{
+    _f_domega.reset();
+    _f_uact.reset();
+    _have_prev = false;
+}
+
+Vector3f AC_INDI_RateLoop::step(float dt, const Vector3f &gyro, const Vector3f &u_act,
+                                const Vector3f &w_des, const Vector3f &dw_ff, float u_limit,
+                                Vector3f &domega_pred, Vector3f &domega_filt,
+                                Vector3f &u_filt, bool &sat)
+{
+    if (!_have_prev) {
+        _prev_gyro = gyro;
+        _have_prev = true;
+    }
+    // (1) angular-accel estimate: filtered gyro derivative.
+    const Vector3f domega_raw = (gyro - _prev_gyro) / dt;
+    _prev_gyro = gyro;
+    domega_filt = _f_domega.apply(domega_raw);
+
+    // (2) actuator-state estimate: measured actuator torque through the SAME
+    // filter config (phase-matched with the angular-accel estimate).
+    u_filt = _f_uact.apply(u_act);
+
+    // (3) rate error -> desired angular acceleration.
+    domega_pred = Vector3f(_kw.x * (w_des.x - gyro.x) + dw_ff.x,
+                           _kw.y * (w_des.y - gyro.y) + dw_ff.y,
+                           _kw.z * (w_des.z - gyro.z) + dw_ff.z);
+
+    // (4) INDI inversion: u = u_filt + G1^-1 (dw_cmd - domega_filt).
+    Vector3f u_cmd(u_filt.x + (domega_pred.x - domega_filt.x) * _g1_inv.x,
+                   u_filt.y + (domega_pred.y - domega_filt.y) * _g1_inv.y,
+                   u_filt.z + (domega_pred.z - domega_filt.z) * _g1_inv.z);
+
+    // (5) saturation: prioritized shed-yaw (drop the yaw increment first, keep
+    // tilt), then clip all axes -- flagged, never silently wrapped.
+    sat = (fabsf(u_cmd.x) > u_limit) || (fabsf(u_cmd.y) > u_limit) ||
+          (fabsf(u_cmd.z) > u_limit);
+    if (sat) {
+        u_cmd.z = u_filt.z;
+        u_cmd.x = constrain_float(u_cmd.x, -u_limit, u_limit);
+        u_cmd.y = constrain_float(u_cmd.y, -u_limit, u_limit);
+        u_cmd.z = constrain_float(u_cmd.z, -u_limit, u_limit);
+    }
+    return u_cmd;
+}
+
 Vector3f AC_CustomControl_INDI::update(void)
 {
-    // Behaviour-neutral until the INDI law lands (Tasks 2-3): hand back the
-    // stock rate-controller output so CC_TYPE=3 changes nothing yet. This
-    // proves the framework wiring + build in isolation.
-    //
-    // run_rate_controller_main runs immediately before run_custom_controller
-    // (Copter.cpp scheduler), writing the stock output into the motors' roll/
-    // pitch/yaw inputs. Reading those back and returning them means motor_set()
-    // writes the identical values -- a genuine no-op.
-    return Vector3f(_motors->get_roll(), _motors->get_pitch(), _motors->get_yaw());
+    // Reset filter/loop state while on the ground to avoid build-up, matching
+    // the PID backend's spool-state handling.
+    switch (_motors->get_spool_state()) {
+        case AP_Motors::SpoolState::SHUT_DOWN:
+        case AP_Motors::SpoolState::GROUND_IDLE:
+            reset();
+            break;
+        case AP_Motors::SpoolState::THROTTLE_UNLIMITED:
+        case AP_Motors::SpoolState::SPOOLING_UP:
+        case AP_Motors::SpoolState::SPOOLING_DOWN:
+            break;
+    }
+
+    // Params are only valid after load_object_from_eeprom (post-construction),
+    // so configure the rate loop on first run.
+    if (!_rate_loop_configured) {
+        _rate_loop.configure(_filt_hz, 1.0f / _dt,
+                             Vector3f(_kw_rp, _kw_rp, _kw_yaw),
+                             Vector3f(_g1_rp, _g1_rp, _g1_yaw));
+        _rate_loop_configured = true;
+    }
+
+    // Outer loop (unchanged stock guided position->attitude): read the stock
+    // attitude target and turn it into a desired body rate via the Task-2
+    // tilt-prioritized reference, including the target angular-velocity
+    // feedforward (rotated into the body frame, as the PID backend does).
+    Quaternion attitude_body, attitude_target;
+    _ahrs->get_quat_body_to_ned(attitude_body);
+    attitude_target = _att_control->get_attitude_target_quat();
+    const Quaternion rotation_target_to_body = attitude_body.inverse() * attitude_target;
+    const Vector3f w_ff = rotation_target_to_body * _att_control->get_attitude_target_ang_vel();
+    const Vector3f w_des = attitude_rate_ref(attitude_body, attitude_target,
+                                             _kp_tilt, _kp_yaw, w_ff);
+
+    // Inner loop: INDI rate law. Actuator state is the stock mixer's current
+    // torque command (_motors->get_roll/pitch/yaw); outputs are torque-like in
+    // the mixer's [-1, 1] range (S3 Layer-A accepts the stock-mixer limitation).
+    const Vector3f gyro = _ahrs->get_gyro_latest();
+    const Vector3f u_act(_motors->get_roll(), _motors->get_pitch(), _motors->get_yaw());
+    Vector3f domega_pred, domega_filt, u_filt;
+    bool sat;
+    return _rate_loop.step(_dt, gyro, u_act, w_des, Vector3f(), 1.0f,
+                           domega_pred, domega_filt, u_filt, sat);
 }
 
 void AC_CustomControl_INDI::reset(void)
 {
-    // No integrator/filter state yet (behaviour-neutral). Filter reset lands
-    // with the INDI rate loop in Task 3.
+    _rate_loop.reset();
+    _rate_loop_configured = false;
 }
 
 #endif  // AP_CUSTOMCONTROL_INDI_ENABLED
