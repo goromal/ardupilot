@@ -24,6 +24,16 @@ public:
     Vector3f update(void) override;
     void reset(void) override;
 
+    // Tilt-prioritized attitude -> desired body-rate reference (Task 2).
+    // Pure function (no member state) so it is unit-testable directly. q and
+    // q_ref are body->NED quaternions [w,x,y,z]; returns a body-frame rate
+    // command [rad/s]. Direct port of indi_harness.tilt_yaw.attitude_rate_ref:
+    // qe = conj(q)*q_ref (scalar part forced >= 0, no unwinding), split into a
+    // reduced-tilt and a pure-yaw rotation, weighted by kp_tilt and kp_yaw
+    // (kp_yaw < kp_tilt de-prioritizes yaw), plus the reference rate w_ff.
+    static Vector3f attitude_rate_ref(const Quaternion &q, const Quaternion &q_ref,
+                                      float kp_tilt, float kp_yaw, const Vector3f &w_ff);
+
     // user settable parameters
     static const struct AP_Param::GroupInfo var_info[];
 
