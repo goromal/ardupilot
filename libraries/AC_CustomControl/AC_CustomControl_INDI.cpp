@@ -4,6 +4,7 @@
 
 #include "AC_CustomControl_INDI.h"
 #include <AP_Motors/AP_MotorsMulticopter.h>
+#include <AP_Logger/AP_Logger.h>
 #include <cmath>
 
 // table of user settable parameters
@@ -270,8 +271,44 @@ Vector3f AC_CustomControl_INDI::update(void)
     const Vector3f u_act(_motors->get_roll(), _motors->get_pitch(), _motors->get_yaw());
     Vector3f domega_pred, domega_filt, u_filt;
     bool sat;
-    return _rate_loop.step(_dt, gyro, u_act, w_des, Vector3f(), 1.0f,
-                           domega_pred, domega_filt, u_filt, sat);
+    const Vector3f u_cmd = _rate_loop.step(_dt, gyro, u_act, w_des, Vector3f(), 1.0f,
+                                           domega_pred, domega_filt, u_filt, sat);
+
+#if HAL_LOGGING_ENABLED
+    // INDI health to the .BIN (design-doc L: the .BIN is source of truth).
+    // Predicted vs measured/filtered angular accel is the tell for filter/G1
+    // mismatch (they should track); the actuator-state estimate and the INDI
+    // increment Du = u_cmd - u_filt plus the saturation flag round out the
+    // per-loop health picture. Read back by indi_harness read_indi_health().
+    // @LoggerMessage: INDI
+    // @Description: Layer-A INDI attitude/rate backend health
+    // @Field: TimeUS: Time since system startup
+    // @Field: Px: predicted angular accel roll
+    // @Field: Py: predicted angular accel pitch
+    // @Field: Pz: predicted angular accel yaw
+    // @Field: Mx: measured (filtered) angular accel roll
+    // @Field: My: measured (filtered) angular accel pitch
+    // @Field: Mz: measured (filtered) angular accel yaw
+    // @Field: Ax: filtered actuator-state estimate roll
+    // @Field: Ay: filtered actuator-state estimate pitch
+    // @Field: Az: filtered actuator-state estimate yaw
+    // @Field: Dx: INDI torque increment roll
+    // @Field: Dy: INDI torque increment pitch
+    // @Field: Dz: INDI torque increment yaw
+    // @Field: S: saturation flag (1 if any axis saturated)
+    AP::logger().Write(
+        "INDI",
+        "TimeUS,Px,Py,Pz,Mx,My,Mz,Ax,Ay,Az,Dx,Dy,Dz,S",
+        "Qffffffffffffi",
+        AP_HAL::micros64(),
+        domega_pred.x, domega_pred.y, domega_pred.z,
+        domega_filt.x, domega_filt.y, domega_filt.z,
+        u_filt.x, u_filt.y, u_filt.z,
+        u_cmd.x - u_filt.x, u_cmd.y - u_filt.y, u_cmd.z - u_filt.z,
+        (int32_t)sat);
+#endif
+
+    return u_cmd;
 }
 
 void AC_CustomControl_INDI::reset(void)
