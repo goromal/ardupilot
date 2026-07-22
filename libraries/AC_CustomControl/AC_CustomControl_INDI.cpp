@@ -33,15 +33,15 @@ const AP_Param::GroupInfo AC_CustomControl_INDI::var_info[] = {
 
     // @Param: G1_RP
     // @DisplayName: INDI roll/pitch control effectiveness
-    // @Description: G1 diagonal control-effectiveness term for the roll and pitch axes (rad/s^2 per unit actuator increment).
+    // @Description: G1 diagonal control-effectiveness term for the roll and pitch axes (rad/s^2 per unit actuator increment). Set conservatively high (above the true effectiveness ~175-479 for the SITL quad) so the increment stays attenuated against the noisy gyro-derivative angular-accel estimate -- a low value amplifies that noise into a motor-buzz limit cycle. Tune per airframe.
     // @User: Advanced
-    AP_GROUPINFO("G1_RP", 4, AC_CustomControl_INDI, _g1_rp, 1.0f),
+    AP_GROUPINFO("G1_RP", 4, AC_CustomControl_INDI, _g1_rp, 1000.0f),
 
     // @Param: G1_YAW
     // @DisplayName: INDI yaw control effectiveness
-    // @Description: G1 diagonal control-effectiveness term for the yaw axis (rad/s^2 per unit actuator increment).
+    // @Description: G1 diagonal control-effectiveness term for the yaw axis (rad/s^2 per unit actuator increment). See G1_RP.
     // @User: Advanced
-    AP_GROUPINFO("G1_YAW", 5, AC_CustomControl_INDI, _g1_yaw, 1.0f),
+    AP_GROUPINFO("G1_YAW", 5, AC_CustomControl_INDI, _g1_yaw, 1000.0f),
 
     // @Param: KW_RP
     // @DisplayName: INDI roll/pitch rate-error gain
