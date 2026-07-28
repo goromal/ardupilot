@@ -55,6 +55,14 @@ const AP_Param::GroupInfo AC_CustomControl_INDI::var_info[] = {
     // @User: Standard
     AP_GROUPINFO("KW_YAW", 7, AC_CustomControl_INDI, _kw_yaw, 10.0f),
 
+    // @Param: OMG_FILT
+    // @DisplayName: INDI angular-accel estimator pre-filter cutoff
+    // @Description: Angular-accel estimator pre-filter cutoff; >0 selects filter-then-differentiate (cleaner ang-accel estimate, lets G1 drop). 0 = legacy differentiate-then-filter.
+    // @Range: 0 80
+    // @Units: Hz
+    // @User: Advanced
+    AP_GROUPINFO("OMG_FILT", 8, AC_CustomControl_INDI, _omg_filt, 30.0f),
+
     AP_GROUPEND
 };
 
@@ -184,7 +192,25 @@ void AC_INDI_RateLoop::reset()
 {
     _f_domega.reset();
     _f_uact.reset();
+    _f_gyro.reset();
     _have_prev = false;
+}
+
+// C1: select the angular-accel estimator. cutoff_hz > 0 switches step() to
+// filter-then-differentiate and re-points the actuator-state filter to the
+// SAME cutoff as the gyro pre-filter (the phase-matching rule -- see the
+// class comment). cutoff_hz == 0 leaves the legacy diff-then-filter filters
+// (built by configure()/configure_split()) untouched and active.
+void AC_INDI_RateLoop::configure_estimator(float cutoff_hz, float sample_freq)
+{
+    _use_ftd = cutoff_hz > 0.0f;
+    if (_use_ftd) {
+        _f_gyro.set_cutoff_frequency(sample_freq, cutoff_hz);
+        _f_uact.set_cutoff_frequency(sample_freq, cutoff_hz);
+        _f_gyro.reset();
+        _f_uact.reset();
+        _have_prev = false;  // re-init _prev_gyro_f on the next settled sample
+    }
 }
 
 Vector3f AC_INDI_RateLoop::step(float dt, const Vector3f &gyro, const Vector3f &u_act,
@@ -192,14 +218,28 @@ Vector3f AC_INDI_RateLoop::step(float dt, const Vector3f &gyro, const Vector3f &
                                 Vector3f &domega_pred, Vector3f &domega_filt,
                                 Vector3f &u_filt, bool &sat)
 {
-    if (!_have_prev) {
+    // (1) angular-accel estimate.
+    if (_use_ftd) {
+        // C1: filter-then-differentiate -- filter the gyro first, then
+        // difference the filtered signal. Cleaner than differentiating the
+        // raw (noisy) gyro and filtering afterwards.
+        const Vector3f gyro_f = _f_gyro.apply(gyro);
+        if (!_have_prev) {
+            _prev_gyro_f = gyro_f;
+            _have_prev = true;
+        }
+        domega_filt = (gyro_f - _prev_gyro_f) / dt;
+        _prev_gyro_f = gyro_f;
+    } else {
+        // Legacy: differentiate the raw gyro, then filter the derivative.
+        if (!_have_prev) {
+            _prev_gyro = gyro;
+            _have_prev = true;
+        }
+        const Vector3f domega_raw = (gyro - _prev_gyro) / dt;
         _prev_gyro = gyro;
-        _have_prev = true;
+        domega_filt = _f_domega.apply(domega_raw);
     }
-    // (1) angular-accel estimate: filtered gyro derivative.
-    const Vector3f domega_raw = (gyro - _prev_gyro) / dt;
-    _prev_gyro = gyro;
-    domega_filt = _f_domega.apply(domega_raw);
 
     // (2) actuator-state estimate: measured actuator torque through the SAME
     // filter config (phase-matched with the angular-accel estimate).
@@ -249,6 +289,7 @@ Vector3f AC_CustomControl_INDI::update(void)
         _rate_loop.configure(_filt_hz, 1.0f / _dt,
                              Vector3f(_kw_rp, _kw_rp, _kw_yaw),
                              Vector3f(_g1_rp, _g1_rp, _g1_yaw));
+        _rate_loop.configure_estimator(_omg_filt, 1.0f / _dt);
         _rate_loop_configured = true;
     }
 

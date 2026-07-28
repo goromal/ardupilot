@@ -217,6 +217,75 @@ TEST(AC_CustomControl_INDI, indi_saturation_sheds_yaw)
     EXPECT_NEAR(uc.z, 0.0f, 1e-6f);
 }
 
+// ---- C1: filter-then-differentiate angular-accel estimator ----------------
+// Filter-agnostic analytic properties (the C++ LowPassFilter2p biquad is a
+// different filter family than the indi_harness Python Butter2 oracle, so we
+// do not bit-match a per-sample trace -- see the Layer-C plan). Any
+// DC-preserving low-pass satisfies these regardless of its exact coefficients.
+
+// A constant-angular-accel ramp gyro.x = slope*t must, once the filter has
+// settled, make filter-then-differentiate recover domega_filt.x == slope.
+TEST(INDIRateLoop, FilterThenDiffRecoversRampSlope)
+{
+    const float fs = 400.0f, dt = 1.0f / fs, slope = 12.0f;  // rad/s^2
+    AC_INDI_RateLoop loop;
+    loop.configure(30.0f, fs, Vector3f(20, 20, 10), Vector3f(200, 200, 200));
+    loop.configure_estimator(30.0f, fs);  // CC3_OMG_FILT > 0 -> filter-then-diff
+    Vector3f dp, df, uf;
+    bool sat;
+    for (int i = 0; i < 400; i++) {
+        const float t = i * dt;
+        loop.step(dt, Vector3f(slope * t, 0, 0), Vector3f(), Vector3f(), Vector3f(),
+                  1.0f, dp, df, uf, sat);
+        if (i > 60) {
+            EXPECT_NEAR(df.x, slope, 0.05f * slope) << "i=" << i;
+        }
+    }
+    // phase-match invariant: production mode reports equal cutoffs for the
+    // gyro pre-filter and the actuator-state filter.
+    EXPECT_FLOAT_EQ(loop.domega_cutoff(), loop.uact_cutoff());
+}
+
+// Zero gyro input forever -> zero angular-accel estimate (no spurious output
+// from a settled filter-then-differentiate pipeline fed silence).
+TEST(INDIRateLoop, FilterThenDiffZeroInputZeroOutput)
+{
+    const float fs = 400.0f, dt = 1.0f / fs;
+    AC_INDI_RateLoop loop;
+    loop.configure(30.0f, fs, Vector3f(20, 20, 10), Vector3f(200, 200, 200));
+    loop.configure_estimator(30.0f, fs);
+    Vector3f dp, df, uf;
+    bool sat;
+    for (int i = 0; i < 100; i++) {
+        loop.step(dt, Vector3f(), Vector3f(), Vector3f(), Vector3f(), 1.0f,
+                  dp, df, uf, sat);
+    }
+    EXPECT_NEAR(df.x, 0.0f, 1e-6f);
+    EXPECT_NEAR(df.y, 0.0f, 1e-6f);
+    EXPECT_NEAR(df.z, 0.0f, 1e-6f);
+}
+
+// A constant (non-zero) gyro, once the filter settles, has zero derivative ->
+// zero angular-accel estimate even though the rate itself is non-zero.
+TEST(INDIRateLoop, FilterThenDiffConstantGyroZeroDomega)
+{
+    const float fs = 400.0f, dt = 1.0f / fs;
+    AC_INDI_RateLoop loop;
+    loop.configure(30.0f, fs, Vector3f(20, 20, 10), Vector3f(200, 200, 200));
+    loop.configure_estimator(30.0f, fs);
+    Vector3f dp, df, uf;
+    bool sat;
+    for (int i = 0; i < 200; i++) {
+        loop.step(dt, Vector3f(0.7f, -0.4f, 0.2f), Vector3f(), Vector3f(), Vector3f(),
+                  1.0f, dp, df, uf, sat);
+        if (i > 60) {
+            EXPECT_NEAR(df.x, 0.0f, 1e-3f) << "i=" << i;
+            EXPECT_NEAR(df.y, 0.0f, 1e-3f) << "i=" << i;
+            EXPECT_NEAR(df.z, 0.0f, 1e-3f) << "i=" << i;
+        }
+    }
+}
+
 #endif  // AP_CUSTOMCONTROL_INDI_ENABLED
 
 AP_GTEST_MAIN()

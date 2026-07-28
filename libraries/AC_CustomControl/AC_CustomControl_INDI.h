@@ -32,6 +32,13 @@ public:
     void configure_split(float cutoff_domega_hz, float cutoff_uact_hz,
                          float sample_freq, const Vector3f &kw, const Vector3f &g1);
 
+    // C1: select the angular-accel estimator. cutoff_hz > 0 selects
+    // filter-then-differentiate (gyro_f = LPF(gyro); domega = d/dt gyro_f),
+    // re-pointing the actuator-state filter to the SAME cutoff so the two
+    // stay phase-matched. cutoff_hz == 0 restores the legacy
+    // differentiate-then-filter path built by configure()/configure_split().
+    void configure_estimator(float cutoff_hz, float sample_freq);
+
     void reset();
 
     // One INDI rate-loop iteration.
@@ -47,17 +54,23 @@ public:
                   Vector3f &domega_pred, Vector3f &domega_filt,
                   Vector3f &u_filt, bool &sat);
 
-    // group-delay-match introspection (used by the phase-match regression test)
-    float domega_cutoff() const { return _f_domega.get_cutoff_freq(); }
+    // group-delay-match introspection (used by the phase-match regression test).
+    // In filter-then-differentiate mode the gyro pre-filter is the one paired
+    // with the actuator-state filter, so report ITS cutoff, not _f_domega's
+    // (which sits unused in that mode).
+    float domega_cutoff() const { return _use_ftd ? _f_gyro.get_cutoff_freq() : _f_domega.get_cutoff_freq(); }
     float uact_cutoff() const { return _f_uact.get_cutoff_freq(); }
 
 private:
-    LowPassFilter2pVector3f _f_domega;   // angular-accel estimate
-    LowPassFilter2pVector3f _f_uact;     // actuator-state estimate (same cutoff)
+    LowPassFilter2pVector3f _f_domega;   // angular-accel estimate (legacy diff-then-filter)
+    LowPassFilter2pVector3f _f_uact;     // actuator-state estimate (same cutoff as whichever estimate path is active)
+    LowPassFilter2pVector3f _f_gyro;     // C1: gyro pre-filter (filter-then-differentiate)
     Vector3f _kw;                        // rate-error -> desired ang-accel gain
     Vector3f _g1_inv;                    // diagonal G1^-1 (rad/s^2 per unit u)
-    Vector3f _prev_gyro;
+    Vector3f _prev_gyro;                 // legacy path: previous raw gyro
+    Vector3f _prev_gyro_f;               // C1 path: previous filtered gyro
     bool _have_prev = false;
+    bool _use_ftd = false;               // C1: filter-then-differentiate selected
 };
 
 // Layer-A INDI attitude/rate backend (design-doc S3).
@@ -109,6 +122,12 @@ protected:
     // Rate-error -> desired angular-accel gain kw (Task 3): roll/pitch and yaw.
     AP_Float _kw_rp;
     AP_Float _kw_yaw;
+
+    // C1 (Layer C): angular-accel estimator pre-filter cutoff (Hz). >0 selects
+    // filter-then-differentiate (gyro_f = LPF(gyro); domega = d/dt gyro_f) and
+    // re-points the actuator-state filter to this SAME cutoff so the two stay
+    // phase-matched. 0 = legacy differentiate-then-filter.
+    AP_Float _omg_filt;
 
     // The INDI rate loop and a one-shot configure guard (params are only valid
     // after load_object_from_eeprom, which runs after construction).
