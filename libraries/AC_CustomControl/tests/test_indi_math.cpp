@@ -5,6 +5,7 @@
 #include <AP_gtest.h>
 #include <AP_Math/AP_Math.h>
 #include <AC_CustomControl/AC_CustomControl_INDI.h>
+#include <AC_CustomControl/AP_INDI_RpmSource.h>
 
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
@@ -284,6 +285,56 @@ TEST(INDIRateLoop, FilterThenDiffConstantGyroZeroDomega)
             EXPECT_NEAR(df.z, 0.0f, 1e-3f) << "i=" << i;
         }
     }
+}
+
+// ---- C2/Task 4: RPM-source interface -- SITL shim + staleness fallback ----
+
+// Bernoulli CRC-dropout probability = 1.0: every sample is dropped, so the
+// shim must always report unhealthy and always substitute the first-order
+// model estimate (never a raw zero/NaN passthrough). Under a rising
+// throttle ramp the fallback estimate must track monotonically upward.
+TEST(AP_INDI_RpmSource, ShimDropoutFallsBack)
+{
+    AP_INDI_RpmSource_Sim shim;
+    shim.configure(/*qnt=*/50.0f, /*drop=*/1.0f, /*lat_ticks=*/2,
+                   /*aff_a=*/4000.0f, /*aff_b=*/50.0f);
+    shim.set_truth(0, 6000.0f);  // truth is present but must never get through
+
+    float prev_om = -1.0f;
+    for (int i = 0; i < 200; i++) {
+        const float thr = constrain_float(i / 199.0f, 0.0f, 1.0f);  // 0 -> 1 ramp
+        shim.set_throttle(0, thr);
+
+        float om = 0.0f;
+        const bool ok = shim.get(0, om);
+        ASSERT_TRUE(ok);
+        EXPECT_FALSE(shim.healthy(0)) << "i=" << i;
+        EXPECT_TRUE(shim.used_fallback(0)) << "i=" << i;
+        EXPECT_GT(om, 0.0f) << "i=" << i;          // model estimate, not zero
+        EXPECT_TRUE(std::isfinite(om)) << "i=" << i; // never NaN/inf
+
+        EXPECT_GE(om, prev_om) << "i=" << i;        // monotonic non-decreasing
+        prev_om = om;
+    }
+}
+
+// No dropout: quantization is applied and, once the (small) latency line
+// has filled, the delivered eRPM->rad/s conversion is exact and the source
+// reports healthy with no fallback.
+TEST(AP_INDI_RpmSource, ShimNoDropoutQuantizedConversion)
+{
+    AP_INDI_RpmSource_Sim shim;
+    shim.configure(/*qnt=*/100.0f, /*drop=*/0.0f, /*lat_ticks=*/0,
+                   /*aff_a=*/4000.0f, /*aff_b=*/50.0f);
+    // 6070 eRPM quantized to the nearest 100 -> 6100 eRPM.
+    shim.set_truth(0, 6070.0f);
+
+    float om = 0.0f;
+    ASSERT_TRUE(shim.get(0, om));
+    EXPECT_TRUE(shim.healthy(0));
+    EXPECT_FALSE(shim.used_fallback(0));
+    const float expect_omega = 6100.0f * (2.0f * static_cast<float>(M_PI) / 60.0f);
+    EXPECT_NEAR(om, expect_omega, 1e-2f);
 }
 
 #endif  // AP_CUSTOMCONTROL_INDI_ENABLED
