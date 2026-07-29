@@ -33,9 +33,9 @@ const AP_Param::GroupInfo AC_CustomControl_INDI::var_info[] = {
 
     // @Param: G1_RP
     // @DisplayName: INDI roll/pitch control effectiveness
-    // @Description: G1 diagonal control-effectiveness term for the roll and pitch axes (rad/s^2 per unit actuator increment). Set conservatively high (above the true effectiveness ~175-479 for the SITL quad) so the increment stays attenuated against the noisy gyro-derivative angular-accel estimate -- a low value amplifies that noise into a motor-buzz limit cycle. Tune per airframe.
+    // @Description: G1 diagonal control-effectiveness term for the roll and pitch axes (rad/s^2 per unit actuator increment). With a low-delay angular-accel estimate (OMG_FILT ~80 Hz) the rate loop is stable near the true effectiveness, so this is set to 500 (roll/pitch track cleanly, RATE-gyro buzz < 5 deg/s). The earlier Layer-A value of 1000 was a workaround for the higher-delay estimate (OMG_FILT ~30-40), which limit-cycled at true-effectiveness gains -- raise OMG_FILT before lowering this further. Tune per airframe.
     // @User: Advanced
-    AP_GROUPINFO("G1_RP", 4, AC_CustomControl_INDI, _g1_rp, 1000.0f),
+    AP_GROUPINFO("G1_RP", 4, AC_CustomControl_INDI, _g1_rp, 500.0f),
 
     // @Param: G1_YAW
     // @DisplayName: INDI yaw control effectiveness
@@ -57,11 +57,11 @@ const AP_Param::GroupInfo AC_CustomControl_INDI::var_info[] = {
 
     // @Param: OMG_FILT
     // @DisplayName: INDI angular-accel estimator pre-filter cutoff
-    // @Description: Angular-accel estimator pre-filter cutoff; >0 selects filter-then-differentiate (cleaner ang-accel estimate, lets G1 drop). 0 = legacy differentiate-then-filter.
-    // @Range: 0 80
+    // @Description: Angular-accel estimator pre-filter cutoff; >0 selects filter-then-differentiate (cleaner ang-accel estimate). 0 = legacy differentiate-then-filter. The cutoff sets the feedback group delay: too low (<=40) and the INDI rate loop limit-cycles at true-effectiveness gains (delay-driven instability); ~80 Hz suppresses the roll/pitch limit cycle and lets the loop track. Default 80.
+    // @Range: 0 120
     // @Units: Hz
     // @User: Advanced
-    AP_GROUPINFO("OMG_FILT", 8, AC_CustomControl_INDI, _omg_filt, 30.0f),
+    AP_GROUPINFO("OMG_FILT", 8, AC_CustomControl_INDI, _omg_filt, 80.0f),
 
     AP_GROUPEND
 };
