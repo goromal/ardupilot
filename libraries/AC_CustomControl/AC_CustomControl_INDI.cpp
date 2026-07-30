@@ -413,18 +413,26 @@ Vector3f AC_CustomControl_INDI::update(void)
             const Quaternion rot_ref_to_body = attitude_body.inverse() * attitude_target;
             w_ff = rot_ref_to_body * rs.w;
             dw_ff = rot_ref_to_body * rs.dw;
-            // Collective thrust: drive the motor throttle from the outer loop's
-            // thrust command so thrust is coordinated with the commanded tilt.
-            // T_bar (specific thrust) = T_cmd/m (m=1) grows with tilt, so
-            // throttle = (T_bar/g)*hover already carries the tilt compensation
-            // (no attitude angle-boost needed). This overrides the _throttle_in
-            // the flight mode set; run_custom_controller runs just before
-            // motors_output_main, so this is the last write. Without it the
-            // collective stays on the stock/guided hover value and the vehicle
-            // under-tracks (attitude-only). Left to stock when B_THR_EN=0.
+            // Collective thrust: drive the motor throttle from the specific
+            // thrust the pos/vel+flatness command needs -- the geometric-
+            // controller collective |g*e3 - a_cmd|, which grows with the
+            // commanded tilt AND holds altitude via the z position/velocity
+            // feedback in a_cmd. throttle = (|g*e3 - a_cmd|/g)*hover.
+            //
+            // NOTE: we deliberately do NOT drive throttle from the INDI thrust-
+            // increment os.T_cmd = |f_cmd|. That closes a lagged positive-
+            // feedback loop (throttle -> T_state -> f_state -> f_cmd -> throttle)
+            // that winds up (observed: altitude runaway, T_cmd 10->340 N). a_cmd
+            // depends only on measured p/v, so this collective is stable.
+            //
+            // Overrides the _throttle_in the flight mode set; run_custom_
+            // controller runs just before motors_output_main, so this is the
+            // last write. Left to the stock/guided path when B_THR_EN=0.
             if (_b_thr_en) {
                 const float hover = _motors->get_throttle_hover();
-                const float thr = (os.T_cmd / GRAVITY_MSS) * hover;
+                const float spec_thrust =
+                    (Vector3f(0.0f, 0.0f, GRAVITY_MSS) - os.a_cmd).length();
+                const float thr = (spec_thrust / GRAVITY_MSS) * hover;
                 _motors->set_throttle(constrain_float(thr, 0.0f, 1.0f));
             }
             log_ref_p = ref.p;

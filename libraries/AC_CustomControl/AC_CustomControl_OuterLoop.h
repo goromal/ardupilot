@@ -47,7 +47,8 @@ public:
     // One outer-loop iteration output.
     struct OuterState {
         Vector3f z_b_des;   // desired body-z direction in NED (unit)
-        float T_cmd;        // collective thrust command [N]
+        float T_cmd;        // INDI thrust-increment magnitude [N] (attitude/log use)
+        Vector3f a_cmd;     // pos/vel + flatness accel command [m/s^2] (collective)
     };
 
     AC_INDI_OuterLoop() {}

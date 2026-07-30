@@ -195,6 +195,7 @@ AC_INDI_OuterLoop::update(const Vector3f &p, const Vector3f &v, const Quaternion
     OuterState os;
     os.z_b_des = -f_cmd / T_bar;
     os.T_cmd = _m * T_bar;
+    os.a_cmd = a_cmd;
     return os;
 }
 
