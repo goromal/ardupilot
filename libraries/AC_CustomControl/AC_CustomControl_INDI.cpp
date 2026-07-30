@@ -5,6 +5,10 @@
 #include "AC_CustomControl_INDI.h"
 #include <AP_Motors/AP_MotorsMulticopter.h>
 #include <AP_Logger/AP_Logger.h>
+#include <AP_DDS/AP_DDS_config.h>
+#if AP_DDS_ENABLED
+#include <AP_DDS/AP_DDS_Client.h>
+#endif
 #include <cmath>
 
 // table of user settable parameters
@@ -62,6 +66,53 @@ const AP_Param::GroupInfo AC_CustomControl_INDI::var_info[] = {
     // @Units: Hz
     // @User: Advanced
     AP_GROUPINFO("OMG_FILT", 8, AC_CustomControl_INDI, _omg_filt, 80.0f),
+
+    // @Param: OUTER_EN
+    // @DisplayName: INDI Layer-B outer loop enable
+    // @Description: Enable the in-firmware INDI outer loop (design-doc S3 Layer B). 0 = stock guided position->attitude outer loop (C1 inner loop as-is). 1 = run the flatness + linear-INDI outer loop off a fresh DDS FlatSetpoint (rt/ap/flat_setpoint), replacing the stock attitude target with (q_ref, w_ff, dw_ff). Falls back to stock when the setpoint is stale/absent.
+    // @Values: 0:Disabled,1:Enabled
+    // @User: Advanced
+    AP_GROUPINFO("OUTER_EN", 9, AC_CustomControl_INDI, _outer_en, 0),
+
+    // @Param: B_KP_XY
+    // @DisplayName: INDI outer-loop horizontal position P gain
+    // @Description: Layer-B outer-loop position P gain for the horizontal (roll/pitch) axes: desired accel += kp*(p_ref - p).
+    // @User: Advanced
+    AP_GROUPINFO("B_KP_XY", 10, AC_CustomControl_INDI, _b_kp_xy, 6.0f),
+
+    // @Param: B_KP_Z
+    // @DisplayName: INDI outer-loop vertical position P gain
+    // @Description: Layer-B outer-loop position P gain for the vertical (z) axis.
+    // @User: Advanced
+    AP_GROUPINFO("B_KP_Z", 11, AC_CustomControl_INDI, _b_kp_z, 6.0f),
+
+    // @Param: B_KV_XY
+    // @DisplayName: INDI outer-loop horizontal velocity P gain
+    // @Description: Layer-B outer-loop velocity P gain for the horizontal (roll/pitch) axes: desired accel += kv*(v_ref - v).
+    // @User: Advanced
+    AP_GROUPINFO("B_KV_XY", 12, AC_CustomControl_INDI, _b_kv_xy, 4.0f),
+
+    // @Param: B_KV_Z
+    // @DisplayName: INDI outer-loop vertical velocity P gain
+    // @Description: Layer-B outer-loop velocity P gain for the vertical (z) axis.
+    // @User: Advanced
+    AP_GROUPINFO("B_KV_Z", 13, AC_CustomControl_INDI, _b_kv_z, 4.0f),
+
+    // @Param: B_ACC_FILT
+    // @DisplayName: INDI outer-loop specific-force filter cutoff
+    // @Description: Low-pass cutoff (Hz) shared by the outer loop's two phase-matched INDI filters (measured specific force + thrust-vector state). This sets the outer-loop feedback group delay -- the phase-margin knob. Too high and the thrust-vector INDI increment can become latency-unstable offboard; too low and it degenerates to PD+feedforward with no INDI action. Swept in S3 Layer-B bring-up (Task B5).
+    // @Range: 2 40
+    // @Units: Hz
+    // @User: Advanced
+    AP_GROUPINFO("B_ACC_FILT", 14, AC_CustomControl_INDI, _b_acc_filt, 8.0f),
+
+    // @Param: B_DDS_TMO
+    // @DisplayName: INDI outer-loop DDS setpoint timeout
+    // @Description: Maximum age (ms) of the latest DDS FlatSetpoint before the outer loop treats it as stale and falls back to the stock guided target.
+    // @Range: 50 1000
+    // @Units: ms
+    // @User: Advanced
+    AP_GROUPINFO("B_DDS_TMO", 15, AC_CustomControl_INDI, _b_dds_tmo, 200),
 
     AP_GROUPEND
 };
@@ -293,15 +344,86 @@ Vector3f AC_CustomControl_INDI::update(void)
         _rate_loop_configured = true;
     }
 
-    // Outer loop (unchanged stock guided position->attitude): read the stock
-    // attitude target and turn it into a desired body rate via the Task-2
-    // tilt-prioritized reference, including the target angular-velocity
-    // feedforward (rotated into the body frame, as the PID backend does).
+    // Outer loop -> desired body rate via the Task-2 tilt-prioritized reference.
+    // Default: the stock guided position->attitude outer loop (C1 behaviour).
+    // Layer B (CC3_OUTER_EN=1, fresh DDS FlatSetpoint): the in-firmware INDI
+    // outer loop supplies (q_ref, w_ff, dw_ff) instead. dw_ff is passed to the
+    // rate loop's angular-accel feedforward (5th step() arg).
     Quaternion attitude_body, attitude_target;
     _ahrs->get_quat_body_to_ned(attitude_body);
-    attitude_target = _att_control->get_attitude_target_quat();
-    const Quaternion rotation_target_to_body = attitude_body.inverse() * attitude_target;
-    const Vector3f w_ff = rotation_target_to_body * _att_control->get_attitude_target_ang_vel();
+
+    bool outer_active = false;
+    Vector3f w_ff, dw_ff;
+    Vector3f log_ref_p, log_meas_p;   // INDB: reference vs measured position
+    float log_tcmd = 0.0f;            // INDB: outer-loop collective thrust cmd
+#if AP_DDS_ENABLED
+    AP_DDS_Client *dds = AP_DDS_Client::get_singleton();
+    AP_DDS_Client::FlatRef ref;
+    if (_outer_en && dds != nullptr &&
+        dds->get_flat_setpoint(ref, (uint32_t)_b_dds_tmo.get() * 1000U)) {
+        // one-shot configure (params are valid only after EEPROM load).
+        if (!_outer_configured) {
+            _outer.configure(Vector3f(_b_kp_xy, _b_kp_xy, _b_kp_z),
+                             Vector3f(_b_kv_xy, _b_kv_xy, _b_kv_z),
+                             _b_acc_filt, 1.0f / _dt, /*m*/ 1.0f, GRAVITY_MSS);
+            _outer_configured = true;
+            _have_prev_wz = false;
+        }
+        Vector3f p, v;
+        if (_ahrs->get_relative_position_NED_origin_float(p) &&
+            _ahrs->get_velocity_NED(v)) {
+            // Body specific force, via the AHRS earth-frame accel (= R*body
+            // specific force) rotated back to body so update() re-rotates it
+            // consistently with attitude_body.
+            const Vector3f f_b = attitude_body.inverse() * _ahrs->get_accel_ef();
+            // Thrust-state estimate: thrust ~ (throttle/hover) about hover, so
+            // T/m ~ (throttle/hover)*g. SITL-valid (thrust proportional to
+            // throttle near hover); the RPM-fed estimate is deferred to HW/S4.
+            const float hov = _motors->get_throttle_hover();
+            const float T_state = is_positive(hov)
+                ? (_motors->get_throttle() / hov) * GRAVITY_MSS : GRAVITY_MSS;
+
+            const AC_INDI_OuterLoop::FlatOutput fo{
+                ref.p, ref.v, ref.a, ref.j, ref.s, ref.psi, ref.dpsi, ref.ddpsi};
+            const AC_INDI_OuterLoop::OuterState os =
+                _outer.update(p, v, attitude_body, f_b, T_state, fo);
+            AC_INDI_OuterLoop::RefState rs =
+                AC_INDI_OuterLoop::flat_reference(fo, /*m*/ 1.0f, GRAVITY_MSS);
+
+            // Inter-tick dw_z: finite-difference the closed-form w_z (rs.w.z)
+            // against the previous tick. The oracle's analytic central diff
+            // needs the trajectory; successive dense DDS setpoints approximate
+            // it. First tick after (re)engage: dw_z = 0.
+            if (_have_prev_wz) {
+                rs.dw.z = (rs.w.z - _prev_wz) / _dt;
+            }
+            _prev_wz = rs.w.z;
+            _have_prev_wz = true;
+
+            attitude_target = AC_INDI_OuterLoop::attitude_from_thrust_dir(os.z_b_des, ref.psi);
+            // Rotate the reference body-rate / ang-accel FF into the current
+            // body frame (the stock path rotates the target ang vel likewise).
+            const Quaternion rot_ref_to_body = attitude_body.inverse() * attitude_target;
+            w_ff = rot_ref_to_body * rs.w;
+            dw_ff = rot_ref_to_body * rs.dw;
+            log_ref_p = ref.p;
+            log_meas_p = p;
+            log_tcmd = os.T_cmd;
+            outer_active = true;
+        }
+    }
+#endif // AP_DDS_ENABLED
+
+    if (!outer_active) {
+        // Stock guided position->attitude outer loop (C1 behaviour, unchanged):
+        // read the stock attitude target + target angular-velocity feedforward.
+        attitude_target = _att_control->get_attitude_target_quat();
+        const Quaternion rotation_target_to_body = attitude_body.inverse() * attitude_target;
+        w_ff = rotation_target_to_body * _att_control->get_attitude_target_ang_vel();
+        dw_ff.zero();
+        _have_prev_wz = false;
+    }
+
     const Vector3f w_des = attitude_rate_ref(attitude_body, attitude_target,
                                              _kp_tilt, _kp_yaw, w_ff);
 
@@ -312,7 +434,7 @@ Vector3f AC_CustomControl_INDI::update(void)
     const Vector3f u_act(_motors->get_roll(), _motors->get_pitch(), _motors->get_yaw());
     Vector3f domega_pred, domega_filt, u_filt;
     bool sat;
-    const Vector3f u_cmd = _rate_loop.step(_dt, gyro, u_act, w_des, Vector3f(), 1.0f,
+    const Vector3f u_cmd = _rate_loop.step(_dt, gyro, u_act, w_des, dw_ff, 1.0f,
                                            domega_pred, domega_filt, u_filt, sat);
 
 #if HAL_LOGGING_ENABLED
@@ -347,6 +469,31 @@ Vector3f AC_CustomControl_INDI::update(void)
         u_filt.x, u_filt.y, u_filt.z,
         u_cmd.x - u_filt.x, u_cmd.y - u_filt.y, u_cmd.z - u_filt.z,
         (int32_t)sat);
+
+    // Layer-B outer-loop health (design-doc L). Reference vs measured position,
+    // the collective thrust command, and the fallback flag (1 = stock outer
+    // loop this tick; the DDS ref was disabled/stale/absent). Read back by
+    // indi_harness read_outer_health().
+    // @LoggerMessage: INDB
+    // @Description: Layer-B INDI outer-loop health
+    // @Field: TimeUS: Time since system startup
+    // @Field: RPx: reference position north
+    // @Field: RPy: reference position east
+    // @Field: RPz: reference position down
+    // @Field: Px: measured position north
+    // @Field: Py: measured position east
+    // @Field: Pz: measured position down
+    // @Field: Tc: outer-loop collective thrust command
+    // @Field: FB: fallback flag (1 if the stock outer loop ran this tick)
+    AP::logger().Write(
+        "INDB",
+        "TimeUS,RPx,RPy,RPz,Px,Py,Pz,Tc,FB",
+        "Qfffffffi",
+        AP_HAL::micros64(),
+        log_ref_p.x, log_ref_p.y, log_ref_p.z,
+        log_meas_p.x, log_meas_p.y, log_meas_p.z,
+        log_tcmd,
+        (int32_t)(!outer_active));
 #endif
 
     return u_cmd;

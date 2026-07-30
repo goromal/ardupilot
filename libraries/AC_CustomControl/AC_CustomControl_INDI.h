@@ -10,6 +10,7 @@
 #include <Filter/LowPassFilter2p.h>
 
 #include "AC_CustomControl_Backend.h"
+#include "AC_CustomControl_OuterLoop.h"
 
 // Layer-A INDI rate loop: filtered angular-accel estimate + phase-matched
 // actuator-state estimate + diagonal-G1 inversion, producing the INDI torque
@@ -129,10 +130,36 @@ protected:
     // phase-matched. 0 = legacy differentiate-then-filter.
     AP_Float _omg_filt;
 
+    // --- Layer-B outer loop params (Task B4) ---
+    // Enable the in-firmware INDI outer loop. 0 = stock guided outer loop (C1
+    // as-is); 1 = run AC_INDI_OuterLoop off a fresh DDS FlatSetpoint. Param
+    // CC3_OUTER_EN.
+    AP_Int8 _outer_en;
+    // Position (kp) and velocity (kv) gains, roll/pitch (XY) and z (Z).
+    // Params CC3_B_KP_XY/KP_Z/KV_XY/KV_Z.
+    AP_Float _b_kp_xy;
+    AP_Float _b_kp_z;
+    AP_Float _b_kv_xy;
+    AP_Float _b_kv_z;
+    // Outer-loop INDI specific-force/thrust-state filter cutoff (Hz). The
+    // phase-margin knob swept in Task B5. Param CC3_B_ACC_FILT.
+    AP_Float _b_acc_filt;
+    // Max FlatSetpoint age (ms) before the outer loop falls back to stock.
+    // Param CC3_B_DDS_TMO.
+    AP_Int16 _b_dds_tmo;
+
     // The INDI rate loop and a one-shot configure guard (params are only valid
     // after load_object_from_eeprom, which runs after construction).
     AC_INDI_RateLoop _rate_loop;
     bool _rate_loop_configured = false;
+
+    // Layer-B outer loop + one-shot configure guard. Fed a fresh DDS flat
+    // reference; produces (q_ref, w_ff, dw_ff) replacing the stock target.
+    AC_INDI_OuterLoop _outer;
+    bool _outer_configured = false;
+    // previous-tick closed-form w_z for the inter-tick dw_z feedforward.
+    float _prev_wz = 0.0f;
+    bool _have_prev_wz = false;
 };
 
 #endif  // AP_CUSTOMCONTROL_INDI_ENABLED
