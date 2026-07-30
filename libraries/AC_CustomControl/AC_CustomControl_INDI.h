@@ -147,6 +147,9 @@ protected:
     // Max FlatSetpoint age (ms) before the outer loop falls back to stock.
     // Param CC3_B_DDS_TMO.
     AP_Int16 _b_dds_tmo;
+    // Drive the collective throttle from the outer loop's thrust command when
+    // active (coordinates thrust with tilt). Param CC3_B_THR_EN.
+    AP_Int8 _b_thr_en;
 
     // The INDI rate loop and a one-shot configure guard (params are only valid
     // after load_object_from_eeprom, which runs after construction).

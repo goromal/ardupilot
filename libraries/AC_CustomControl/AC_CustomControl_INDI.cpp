@@ -114,6 +114,13 @@ const AP_Param::GroupInfo AC_CustomControl_INDI::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("B_DDS_TMO", 15, AC_CustomControl_INDI, _b_dds_tmo, 200),
 
+    // @Param: B_THR_EN
+    // @DisplayName: INDI outer-loop collective thrust enable
+    // @Description: When the Layer-B outer loop is active, drive the motor collective throttle from its thrust command (throttle = (T_bar/g)*hover_throttle) so thrust is coordinated with the commanded tilt. 0 = leave the collective to the stock/guided path (the outer loop then commands attitude only, which under-tracks because thrust is not coordinated with tilt).
+    // @Values: 0:Disabled,1:Enabled
+    // @User: Advanced
+    AP_GROUPINFO("B_THR_EN", 16, AC_CustomControl_INDI, _b_thr_en, 1),
+
     AP_GROUPEND
 };
 
@@ -406,6 +413,20 @@ Vector3f AC_CustomControl_INDI::update(void)
             const Quaternion rot_ref_to_body = attitude_body.inverse() * attitude_target;
             w_ff = rot_ref_to_body * rs.w;
             dw_ff = rot_ref_to_body * rs.dw;
+            // Collective thrust: drive the motor throttle from the outer loop's
+            // thrust command so thrust is coordinated with the commanded tilt.
+            // T_bar (specific thrust) = T_cmd/m (m=1) grows with tilt, so
+            // throttle = (T_bar/g)*hover already carries the tilt compensation
+            // (no attitude angle-boost needed). This overrides the _throttle_in
+            // the flight mode set; run_custom_controller runs just before
+            // motors_output_main, so this is the last write. Without it the
+            // collective stays on the stock/guided hover value and the vehicle
+            // under-tracks (attitude-only). Left to stock when B_THR_EN=0.
+            if (_b_thr_en) {
+                const float hover = _motors->get_throttle_hover();
+                const float thr = (os.T_cmd / GRAVITY_MSS) * hover;
+                _motors->set_throttle(constrain_float(thr, 0.0f, 1.0f));
+            }
             log_ref_p = ref.p;
             log_meas_p = p;
             log_tcmd = os.T_cmd;
