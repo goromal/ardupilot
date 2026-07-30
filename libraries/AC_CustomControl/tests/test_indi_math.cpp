@@ -5,6 +5,7 @@
 #include <AP_gtest.h>
 #include <AP_Math/AP_Math.h>
 #include <AC_CustomControl/AC_CustomControl_INDI.h>
+#include <AC_CustomControl/AC_CustomControl_OuterLoop.h>
 #include <AC_CustomControl/AP_INDI_RpmSource.h>
 
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
@@ -335,6 +336,71 @@ TEST(AP_INDI_RpmSource, ShimNoDropoutQuantizedConversion)
     EXPECT_FALSE(shim.used_fallback(0));
     const float expect_omega = 6100.0f * (2.0f * static_cast<float>(M_PI) / 60.0f);
     EXPECT_NEAR(om, expect_omega, 1e-2f);
+}
+
+// ---- Task B1: differential-flatness map (outer loop, part 1) ---------------
+// Oracle: indi_harness.flatness._core via tools/gen_flatness_oracle.py
+// (lemniscate_slow samples + synthetic yaw-varying cases, m=1, g=9.81). The
+// pure map reproduces the closed-form q, w (incl w_z), dw_x, dw_y, T; dw.z is
+// an inter-tick central difference (0 in the pure map), validated in flight.
+TEST(INDIOuterLoop, FlatReferenceMatchesOracle)
+{
+    struct Case {
+        float p[3], v[3], a[3], j[3], s[3], psi, dpsi, ddpsi;
+        float q[4], w[3], dwx, dwy, T;
+    };
+    static const Case C[] = {
+    {{0.716735899f,0.669130606f,-10.000000000f},{0.977643136f,0.778219441f,0.000000000f},{-0.196497216f,-0.733783820f,0.000000000f},{-0.268026417f,-0.853413114f,0.000000000f},{0.053870828f,0.804684002f,0.000000000f},0.000000000f,0.000000000f,0.000000000f,
+     {0.999253482f,-0.037319739f,0.009978798f,-0.000372684f},{-0.086492926f,0.027105574f,-0.001727653f},0.082720466f,-0.005881690f,9.839367350f},
+    {{1.841009707f,0.719339800f,-10.000000000f},{0.409172681f,-0.727444544f,0.000000000f},{-0.504723264f,-0.788844362f,0.000000000f},{-0.112177014f,0.797732209f,0.000000000f},{0.138372749f,0.865064643f,0.000000000f},0.000000000f,0.000000000f,0.000000000f,
+     {0.998867405f,-0.040095886f,0.025596307f,-0.001027470f},{0.080689791f,0.011700594f,0.004138122f},0.088500458f,-0.013858551f,9.854598977f},
+    {{1.841009707f,-0.719339800f,-10.000000000f},{-0.409172681f,-0.727444544f,0.000000000f},{-0.504723264f,0.788844362f,0.000000000f},{0.112177014f,0.797732209f,0.000000000f},{0.138372749f,-0.865064643f,0.000000000f},0.000000000f,0.000000000f,0.000000000f,
+     {0.998867405f,0.040095886f,0.025596307f,0.001027470f},{0.080689791f,-0.011700594f,0.004138122f},-0.088500458f,-0.013858551f,9.854598977f},
+    {{0.716735899f,-0.669130606f,-10.000000000f},{-0.977643136f,0.778219441f,0.000000000f},{-0.196497216f,0.733783820f,0.000000000f},{0.268026417f,-0.853413114f,0.000000000f},{0.053870828f,-0.804684002f,0.000000000f},0.000000000f,0.000000000f,0.000000000f,
+     {0.999253482f,0.037319739f,0.009978798f,0.000372684f},{-0.086492926f,-0.027105574f,-0.001727653f},-0.082720466f,-0.005881690f,9.839367350f},
+    {{0.000000000f,0.000000000f,0.000000000f},{0.000000000f,0.000000000f,0.000000000f},{1.095693499f,-1.841706290f,-3.672211809f},{-5.801668374f,3.759242870f,4.953066927f},{1.706172412f,3.671944976f,0.697999863f},1.740289695f,0.631707108f,-0.994523000f,
+     {0.644313109f,-0.074450933f,0.025614398f,0.760698087f},{0.351169630f,-0.283230567f,0.689574214f},-0.064795015f,-0.720836740f,13.651463715f},
+    {{0.000000000f,0.000000000f,0.000000000f},{0.000000000f,0.000000000f,0.000000000f},{2.859234213f,-3.731315398f,1.837243571f},{-3.892132553f,4.358147068f,0.497534643f},{-3.204609751f,-1.237004461f,-7.546885262f},-1.502866894f,0.341248829f,0.294379023f,
+     {0.681280796f,-0.034191645f,-0.261004688f,-0.683054875f},{-0.351839525f,0.379038951f,0.522420994f},-0.649369578f,0.643349830f,9.255418950f},
+    {{0.000000000f,0.000000000f,0.000000000f},{0.000000000f,0.000000000f,0.000000000f},{0.923080892f,-0.930579566f,3.977679486f},{5.770024065f,2.226503814f,1.805511315f},{3.015147689f,-1.777257216f,-5.838455920f},0.885953361f,0.050708645f,-0.379516249f,
+     {0.898503955f,-0.104006430f,-0.036748788f,0.424879785f},{-0.565550655f,-0.894617765f,0.036549521f},-0.614754515f,-0.457118574f,5.977793844f},
+    };
+    for (const auto &c : C) {
+        AC_INDI_OuterLoop::FlatOutput fo{
+            Vector3f(c.p[0],c.p[1],c.p[2]), Vector3f(c.v[0],c.v[1],c.v[2]),
+            Vector3f(c.a[0],c.a[1],c.a[2]), Vector3f(c.j[0],c.j[1],c.j[2]),
+            Vector3f(c.s[0],c.s[1],c.s[2]), c.psi, c.dpsi, c.ddpsi };
+        const AC_INDI_OuterLoop::RefState r =
+            AC_INDI_OuterLoop::flat_reference(fo, 1.0f, 9.81f);
+        EXPECT_NEAR(r.q.q1, c.q[0], 1e-4f);
+        EXPECT_NEAR(r.q.q2, c.q[1], 1e-4f);
+        EXPECT_NEAR(r.q.q3, c.q[2], 1e-4f);
+        EXPECT_NEAR(r.q.q4, c.q[3], 1e-4f);
+        EXPECT_NEAR(r.w.x, c.w[0], 1e-4f);
+        EXPECT_NEAR(r.w.y, c.w[1], 1e-4f);
+        EXPECT_NEAR(r.w.z, c.w[2], 1e-4f);   // closed-form w_z (not inter-tick)
+        EXPECT_NEAR(r.dw.x, c.dwx, 1e-4f);
+        EXPECT_NEAR(r.dw.y, c.dwy, 1e-4f);
+        EXPECT_NEAR(r.dw.z, 0.0f, 1e-9f);    // pure map leaves dw.z == 0
+        EXPECT_NEAR(r.T, c.T, 1e-4f);
+    }
+}
+
+// Degenerate-thrust guard: ~90 deg pitch along heading makes z_b nearly
+// parallel to x_c (n -> 0). The map must stay finite (no NaN/inf).
+TEST(INDIOuterLoop, FlatReferenceDegenerateStaysFinite)
+{
+    // a chosen so alpha = g*e3 - a points along +x (z_b ~ (1,0,0)); psi=0 =>
+    // x_c=(1,0,0) parallel to z_b -> zxc ~ 0.
+    AC_INDI_OuterLoop::FlatOutput fo{
+        Vector3f(0,0,0), Vector3f(0,0,0), Vector3f(-20.0f, 0.0f, 9.81f),
+        Vector3f(0,0,0), Vector3f(0,0,0), 0.0f, 0.0f, 0.0f };
+    const AC_INDI_OuterLoop::RefState r =
+        AC_INDI_OuterLoop::flat_reference(fo, 1.0f, 9.81f);
+    EXPECT_TRUE(std::isfinite(r.q.q1) && std::isfinite(r.q.q2) &&
+                std::isfinite(r.q.q3) && std::isfinite(r.q.q4));
+    EXPECT_TRUE(std::isfinite(r.w.x) && std::isfinite(r.w.y) && std::isfinite(r.w.z));
+    EXPECT_TRUE(std::isfinite(r.T));
 }
 
 #endif  // AP_CUSTOMCONTROL_INDI_ENABLED
