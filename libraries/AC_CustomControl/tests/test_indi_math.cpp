@@ -403,6 +403,73 @@ TEST(INDIOuterLoop, FlatReferenceDegenerateStaysFinite)
     EXPECT_TRUE(std::isfinite(r.T));
 }
 
+// ---- Task B2: linear-INDI outer loop (outer loop, part 2) -----------------
+// Oracle: indi_harness.outer_loop.OuterLoopINDI.update via
+// tools/gen_flatness_oracle.py (kp=6, kv=4, cutoff=8 Hz, fs=500). The firmware
+// LowPassFilter2p biquad is a different filter family than the Python Butter2
+// (as the C1 inner-loop test notes), so we compare at STEADY STATE: drive
+// constant inputs until both filters settle. Steady state is filter-family
+// independent (both preserve DC), so z_b_des and T_cmd bit-match there. The
+// firmware passes the scalar T_state (thrust/mass) directly in place of the
+// oracle's kf*sum(Omega^2)/m (no RPM in SITL).
+TEST(INDIOuterLoop, UpdateMatchesOracle)
+{
+    struct Case {
+        float p[3], v[3], q[4], f_b[3], T_state;
+        float fa[3], fp[3], fv[3];   // fo.a, fo.p, fo.v
+        float z[3], T_cmd;
+    };
+    static const Case C[] = {
+    {{0.000000000f,0.000000000f,0.000000000f},{0.000000000f,0.000000000f,0.000000000f},{1.000000000f,0.000000000f,0.000000000f,0.000000000f},{0.000000000f,0.000000000f,-9.810000000f},9.810000000f,
+     {0.000000000f,0.000000000f,0.000000000f},{0.000000000f,0.000000000f,0.000000000f},{0.000000000f,0.000000000f,0.000000000f},
+     {-0.000000000f,-0.000000000f,1.000000000f},9.810000000f},
+    {{0.500000000f,-0.300000000f,-9.700000000f},{0.200000000f,0.100000000f,-0.050000000f},{1.000000000f,0.000000000f,0.000000000f,0.000000000f},{0.100000000f,-0.200000000f,-9.510000000f},9.810000000f,
+     {0.600000000f,-0.400000000f,0.200000000f},{1.000000000f,0.500000000f,-10.000000000f},{0.400000000f,-0.200000000f,0.000000000f},
+     {-0.337288516f,-0.266693245f,0.902835074f},12.748729348f},
+    {{-0.400000000f,0.600000000f,-10.200000000f},{-0.100000000f,0.300000000f,0.080000000f},{0.974174432f,0.123922071f,-0.074353242f,0.173490899f},{0.500000000f,0.700000000f,-10.310000000f},11.022516000f,
+     {-1.200000000f,0.900000000f,-0.500000000f},{0.000000000f,1.000000000f,-10.000000000f},{-0.300000000f,0.500000000f,-0.100000000f},
+     {-0.022779511f,-0.308847912f,0.950838609f},11.313841594f},
+    };
+    for (const auto &c : C) {
+        AC_INDI_OuterLoop ol;
+        ol.configure(Vector3f(6,6,6), Vector3f(4,4,4), 8.0f, 500.0f, 1.0f, 9.81f);
+        const Quaternion q(c.q[0], c.q[1], c.q[2], c.q[3]);
+        AC_INDI_OuterLoop::FlatOutput fo{
+            Vector3f(c.fp[0],c.fp[1],c.fp[2]), Vector3f(c.fv[0],c.fv[1],c.fv[2]),
+            Vector3f(c.fa[0],c.fa[1],c.fa[2]), Vector3f(), Vector3f(), 0.0f, 0.0f, 0.0f };
+        AC_INDI_OuterLoop::OuterState os{};
+        for (int i = 0; i < 3000; i++) {
+            os = ol.update(Vector3f(c.p[0],c.p[1],c.p[2]), Vector3f(c.v[0],c.v[1],c.v[2]),
+                           q, Vector3f(c.f_b[0],c.f_b[1],c.f_b[2]), c.T_state, fo);
+        }
+        EXPECT_NEAR(os.z_b_des.x, c.z[0], 1e-3f);
+        EXPECT_NEAR(os.z_b_des.y, c.z[1], 1e-3f);
+        EXPECT_NEAR(os.z_b_des.z, c.z[2], 1e-3f);
+        EXPECT_NEAR(os.T_cmd, c.T_cmd, 1e-3f);
+    }
+}
+
+// attitude_from_thrust_dir: pure triad, incl the degenerate (~90 deg pitch
+// along heading) fallback. Oracle: indi_harness.outer_loop.attitude_from_thrust_dir.
+TEST(INDIOuterLoop, AttitudeFromThrustDirMatchesOracle)
+{
+    struct Case { float z[3], psi, q[4]; };
+    static const Case C[] = {
+    {{0.000000000f,0.000000000f,-1.000000000f},0.000000000f,{0.000000000f,1.000000000f,0.000000000f,0.000000000f}},
+    {{0.200916258f,-0.100458129f,-0.974443852f},0.500000000f,{0.074510152f,0.961200500f,0.251625765f,0.085007712f}},
+    {{-0.298970326f,0.398627101f,-0.867013944f},-1.200000000f,{0.078081324f,-0.786543212f,0.561120974f,0.245756658f}},
+    {{0.999900590f,0.000000000f,-0.014100008f},0.000000000f,{0.000000000f,0.712074437f,0.000000000f,0.702103978f}},
+    };
+    for (const auto &c : C) {
+        const Quaternion q = AC_INDI_OuterLoop::attitude_from_thrust_dir(
+            Vector3f(c.z[0], c.z[1], c.z[2]), c.psi);
+        EXPECT_NEAR(q.q1, c.q[0], 1e-4f);
+        EXPECT_NEAR(q.q2, c.q[1], 1e-4f);
+        EXPECT_NEAR(q.q3, c.q[2], 1e-4f);
+        EXPECT_NEAR(q.q4, c.q[3], 1e-4f);
+    }
+}
+
 #endif  // AP_CUSTOMCONTROL_INDI_ENABLED
 
 AP_GTEST_MAIN()

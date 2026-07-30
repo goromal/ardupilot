@@ -143,4 +143,86 @@ AC_INDI_OuterLoop::flat_reference(const FlatOutput &fo, float m, float g)
     return r;
 }
 
+// --- Layer-B linear-INDI outer loop (Task B2) ------------------------------
+// Port of indi_harness.outer_loop.OuterLoopINDI. The two INDI filters share a
+// single cutoff so their group delays match (the accel/thrust analogue of the
+// inner loop's phase-matching rule). Steady state is filter-family independent
+// (both the firmware biquad and the Python Butter2 preserve DC), which is how
+// the gtest bit-matches the Butter2 oracle after settle.
+
+void AC_INDI_OuterLoop::configure(const Vector3f &kp, const Vector3f &kv,
+                                  float cutoff_hz, float sample_freq,
+                                  float m, float g)
+{
+    _kp = kp;
+    _kv = kv;
+    _m = m;
+    _g = g;
+    _f_accel.set_cutoff_frequency(sample_freq, cutoff_hz);
+    _f_state.set_cutoff_frequency(sample_freq, cutoff_hz);
+    reset();
+}
+
+void AC_INDI_OuterLoop::reset()
+{
+    _f_accel.reset();
+    _f_state.reset();
+}
+
+AC_INDI_OuterLoop::OuterState
+AC_INDI_OuterLoop::update(const Vector3f &p, const Vector3f &v, const Quaternion &q,
+                          const Vector3f &f_b_meas, float T_state, const FlatOutput &fo)
+{
+    // position/velocity + flatness-accel command (element-wise gains).
+    const Vector3f a_cmd(
+        fo.a.x + _kp.x * (fo.p.x - p.x) + _kv.x * (fo.v.x - v.x),
+        fo.a.y + _kp.y * (fo.p.y - p.y) + _kv.y * (fo.v.y - v.y),
+        fo.a.z + _kp.z * (fo.p.z - p.z) + _kv.z * (fo.v.z - v.z));
+
+    // measured specific force, body -> world, low-passed.
+    const Vector3f f_meas_f = _f_accel.apply(q * f_b_meas);
+
+    // thrust-vector state: current body -z scaled by T_state, body -> world,
+    // low-passed (phase-matched with the accel filter).
+    const Vector3f f_state_f = _f_state.apply(q * Vector3f(0.0f, 0.0f, -T_state));
+
+    // INDI thrust-vector increment: replace the filtered measured accel with
+    // the commanded accel about the filtered thrust-vector state. Drag never
+    // enters a model -- it lives in f_meas.
+    const Vector3f f_cmd = f_state_f + (a_cmd - Vector3f(0.0f, 0.0f, _g)) - f_meas_f;
+    const float T_bar = f_cmd.length();
+
+    OuterState os;
+    os.z_b_des = -f_cmd / T_bar;
+    os.T_cmd = _m * T_bar;
+    return os;
+}
+
+Quaternion AC_INDI_OuterLoop::attitude_from_thrust_dir(const Vector3f &z_b_des, float psi)
+{
+    const double zb[3] = { z_b_des.x, z_b_des.y, z_b_des.z };
+    const double cpsi = cos((double)psi), spsi = sin((double)psi);
+    const Vec3 x_c = { cpsi, spsi, 0.0 };
+
+    Vec3 y_b; cross3(zb, x_c, y_b);
+    const double n = norm3(y_b);
+    if (n < 1e-6) {
+        // z_b_des ~ parallel to x_c (~90 deg pitch along heading): yaw triad is
+        // degenerate; fall back to y_c to keep the quaternion finite.
+        y_b[0] = -spsi; y_b[1] = cpsi; y_b[2] = 0.0;
+    } else {
+        y_b[0] /= n; y_b[1] /= n; y_b[2] /= n;
+    }
+    Vec3 x_b; cross3(y_b, zb, x_b);
+
+    const double R[3][3] = {
+        { x_b[0], y_b[0], zb[0] },
+        { x_b[1], y_b[1], zb[1] },
+        { x_b[2], y_b[2], zb[2] },
+    };
+    double q[4];
+    q_from_R(R, q);
+    return Quaternion((float)q[0], (float)q[1], (float)q[2], (float)q[3]);
+}
+
 #endif  // AP_CUSTOMCONTROL_INDI_ENABLED
