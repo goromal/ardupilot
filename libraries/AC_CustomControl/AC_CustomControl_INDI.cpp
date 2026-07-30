@@ -383,12 +383,15 @@ Vector3f AC_CustomControl_INDI::update(void)
             // specific force) rotated back to body so update() re-rotates it
             // consistently with attitude_body.
             const Vector3f f_b = attitude_body.inverse() * _ahrs->get_accel_ef();
-            // Thrust-state estimate: thrust ~ (throttle/hover) about hover, so
-            // T/m ~ (throttle/hover)*g. SITL-valid (thrust proportional to
-            // throttle near hover); the RPM-fed estimate is deferred to HW/S4.
-            const float hov = _motors->get_throttle_hover();
-            const float T_state = is_positive(hov)
-                ? (_motors->get_throttle() / hov) * GRAVITY_MSS : GRAVITY_MSS;
+            // Thrust-state estimate for the INDI increment. We ground it in the
+            // flatness feedforward specific thrust |g*e3 - a_ref| (a function of
+            // the reference ONLY), NOT the commanded throttle. Deriving T_state
+            // from throttle closes a self-referential loop once we drive the
+            // collective (throttle -> T_state -> f_state -> z_b_des/f_cmd ->
+            // throttle) that winds up (observed altitude runaway). With T_state
+            // grounded in the reference, z_b_des stays stable and the INDI
+            // increment keeps its measured-accel disturbance-rejection term.
+            const float T_state = (Vector3f(0.0f, 0.0f, GRAVITY_MSS) - ref.a).length();
 
             const AC_INDI_OuterLoop::FlatOutput fo{
                 ref.p, ref.v, ref.a, ref.j, ref.s, ref.psi, ref.dpsi, ref.ddpsi};
