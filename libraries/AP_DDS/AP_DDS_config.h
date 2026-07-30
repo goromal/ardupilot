@@ -145,6 +145,11 @@
 #define AP_DDS_DYNAMIC_TF_SUB_ENABLED 1
 #endif
 
+// S3 Layer-B: differential-flatness setpoint subscriber for the INDI outer loop.
+#ifndef AP_DDS_FLAT_SETPOINT_SUB_ENABLED
+#define AP_DDS_FLAT_SETPOINT_SUB_ENABLED 1
+#endif
+
 #ifndef AP_DDS_ARM_SERVER_ENABLED
 #define AP_DDS_ARM_SERVER_ENABLED 1
 #endif

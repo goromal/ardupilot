@@ -1,0 +1,33 @@
+// Custom flat-output setpoint for the S3 Layer-B INDI outer loop.
+// Carries a differential-flatness reference {p,v,a,j,s, yaw,yaw_rate,yaw_accel}
+// in the NED world frame, published by the ROS2 trajectory-server and consumed
+// by AC_CustomControl_INDI (CC_TYPE=3, CC3_OUTER_EN=1).
+
+#include "builtin_interfaces/msg/Time.idl"
+#include "geometry_msgs/msg/Vector3.idl"
+
+module ardupilot_msgs {
+  module msg {
+    @verbatim (language="comment", text=
+      "Differential-flatness setpoint (NED world frame) for the INDI outer loop")
+    struct FlatSetpoint {
+      builtin_interfaces::msg::Time stamp;
+
+      geometry_msgs::msg::Vector3 position;
+
+      geometry_msgs::msg::Vector3 velocity;
+
+      geometry_msgs::msg::Vector3 acceleration;
+
+      geometry_msgs::msg::Vector3 jerk;
+
+      geometry_msgs::msg::Vector3 snap;
+
+      double yaw;
+
+      double yaw_rate;
+
+      double yaw_accel;
+    };
+  };
+};

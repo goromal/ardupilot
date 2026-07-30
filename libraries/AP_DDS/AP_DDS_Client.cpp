@@ -105,6 +105,11 @@ geometry_msgs_msg_TwistStamped AP_DDS_Client::rx_velocity_control_topic {};
 #if AP_DDS_GLOBAL_POS_CTRL_ENABLED
 ardupilot_msgs_msg_GlobalPosition AP_DDS_Client::rx_global_position_control_topic {};
 #endif // AP_DDS_GLOBAL_POS_CTRL_ENABLED
+#if AP_DDS_FLAT_SETPOINT_SUB_ENABLED
+ardupilot_msgs_msg_FlatSetpoint AP_DDS_Client::rx_flat_setpoint_topic {};
+#endif // AP_DDS_FLAT_SETPOINT_SUB_ENABLED
+
+AP_DDS_Client *AP_DDS_Client::_singleton = nullptr;
 
 // Define the parameter server data members, which are static class scope.
 // If these are created on the stack, then the AP_DDS_Client::on_request
@@ -181,6 +186,11 @@ static void initialize(geometry_msgs_msg_Quaternion& q)
     q.w = 1.0;
 }
 #endif // AP_DDS_STATIC_TF_PUB_ENABLED | AP_DDS_LOCAL_POSE_PUB_ENABLED | AP_DDS_GEOPOSE_PUB_ENABLED | AP_DDS_IMU_PUB_ENABLED
+
+AP_DDS_Client::AP_DDS_Client()
+{
+    _singleton = this;
+}
 
 AP_DDS_Client::~AP_DDS_Client()
 {
@@ -880,9 +890,47 @@ void AP_DDS_Client::on_topic(uxrSession* uxr_session, uxrObjectId object_id, uin
         break;
     }
 #endif // AP_DDS_GLOBAL_POS_CTRL_ENABLED
+#if AP_DDS_FLAT_SETPOINT_SUB_ENABLED
+    case topics[to_underlying(TopicIndex::FLAT_SETPOINT_SUB)].dr_id.id: {
+        const bool success = ardupilot_msgs_msg_FlatSetpoint_deserialize_topic(ub, &rx_flat_setpoint_topic);
+        if (success == false) {
+            break;
+        }
+        // Cache the flat reference (NED). The trajectory-server publishes NED
+        // directly, so no frame conversion is applied here.
+        const auto &m = rx_flat_setpoint_topic;
+        WITH_SEMAPHORE(csem);
+        _flat_ref.p = Vector3f(m.position.x, m.position.y, m.position.z);
+        _flat_ref.v = Vector3f(m.velocity.x, m.velocity.y, m.velocity.z);
+        _flat_ref.a = Vector3f(m.acceleration.x, m.acceleration.y, m.acceleration.z);
+        _flat_ref.j = Vector3f(m.jerk.x, m.jerk.y, m.jerk.z);
+        _flat_ref.s = Vector3f(m.snap.x, m.snap.y, m.snap.z);
+        _flat_ref.psi = m.yaw;
+        _flat_ref.dpsi = m.yaw_rate;
+        _flat_ref.ddpsi = m.yaw_accel;
+        _flat_ref.stamp_us = AP_HAL::micros64();
+        _flat_ref_valid = true;
+        break;
+    }
+#endif // AP_DDS_FLAT_SETPOINT_SUB_ENABLED
     }
 
 }
+
+#if AP_DDS_FLAT_SETPOINT_SUB_ENABLED
+bool AP_DDS_Client::get_flat_setpoint(FlatRef &out, uint32_t max_age_us) const
+{
+    WITH_SEMAPHORE(csem);
+    if (!_flat_ref_valid) {
+        return false;
+    }
+    if (AP_HAL::micros64() - _flat_ref.stamp_us > max_age_us) {
+        return false;
+    }
+    out = _flat_ref;
+    return true;
+}
+#endif // AP_DDS_FLAT_SETPOINT_SUB_ENABLED
 
 /*
   callback on request completion

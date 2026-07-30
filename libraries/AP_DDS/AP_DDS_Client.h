@@ -10,6 +10,10 @@
 #if AP_DDS_GLOBAL_POS_CTRL_ENABLED
 #include "ardupilot_msgs/msg/GlobalPosition.h"
 #endif // AP_DDS_GLOBAL_POS_CTRL_ENABLED
+#if AP_DDS_FLAT_SETPOINT_SUB_ENABLED
+#include "ardupilot_msgs/msg/FlatSetpoint.h"
+#include <AP_Math/AP_Math.h>
+#endif // AP_DDS_FLAT_SETPOINT_SUB_ENABLED
 #if AP_DDS_TIME_PUB_ENABLED
 #include "builtin_interfaces/msg/Time.h"
 #endif // AP_DDS_TIME_PUB_ENABLED
@@ -83,6 +87,18 @@ extern const AP_HAL::HAL& hal;
 
 class AP_DDS_Client
 {
+
+public:
+#if AP_DDS_FLAT_SETPOINT_SUB_ENABLED
+    // Cached differential-flatness reference (NED world frame) decoded from the
+    // latest FlatSetpoint message, plus the arrival time. Consumed by the INDI
+    // Layer-B outer loop (AC_CustomControl_INDI) via get_flat_setpoint().
+    struct FlatRef {
+        Vector3f p, v, a, j, s;
+        float psi, dpsi, ddpsi;
+        uint64_t stamp_us;
+    };
+#endif // AP_DDS_FLAT_SETPOINT_SUB_ENABLED
 
 private:
 
@@ -241,11 +257,18 @@ private:
     // incoming REP147 goal interface global position
     static ardupilot_msgs_msg_GlobalPosition rx_global_position_control_topic;
 #endif // AP_DDS_GLOBAL_POS_CTRL_ENABLED
+#if AP_DDS_FLAT_SETPOINT_SUB_ENABLED
+    // incoming S3 Layer-B flat-output setpoint (NED) for the INDI outer loop
+    static ardupilot_msgs_msg_FlatSetpoint rx_flat_setpoint_topic;
+    // latest received flat reference + arrival timestamp (see get_flat_setpoint)
+    FlatRef _flat_ref;
+    bool _flat_ref_valid{false};
+#endif // AP_DDS_FLAT_SETPOINT_SUB_ENABLED
 #if AP_DDS_DYNAMIC_TF_SUB_ENABLED
     // incoming transforms
     static tf2_msgs_msg_TFMessage rx_dynamic_transforms_topic;
 #endif // AP_DDS_DYNAMIC_TF_SUB_ENABLED
-    HAL_Semaphore csem;
+    mutable HAL_Semaphore csem;
 
 #if AP_DDS_PARAMETER_SERVER_ENABLED
     static rcl_interfaces_srv_SetParameters_Request set_parameter_request;
@@ -309,9 +332,28 @@ private:
     // client key we present
     static constexpr uint32_t key = 0xAAAABBBB;
 
+    // singleton (see get_singleton), set in the constructor
+    static AP_DDS_Client *_singleton;
+
 
 public:
+    AP_DDS_Client();
     ~AP_DDS_Client();
+
+    // Singleton accessor (set in the constructor). Used by the INDI Layer-B
+    // backend to reach get_flat_setpoint() without an explicit handle.
+    static AP_DDS_Client *get_singleton()
+    {
+        return _singleton;
+    }
+
+#if AP_DDS_FLAT_SETPOINT_SUB_ENABLED
+    // Fetch the latest flat-output setpoint if one has been received and is not
+    // older than max_age_us. Returns false (and leaves out untouched) when no
+    // setpoint has arrived or the cached one is stale -- the outer loop then
+    // falls back to the stock guided target.
+    bool get_flat_setpoint(FlatRef &out, uint32_t max_age_us) const;
+#endif // AP_DDS_FLAT_SETPOINT_SUB_ENABLED
 
     bool start(void);
     void main_loop(void);
