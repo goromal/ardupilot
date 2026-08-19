@@ -363,6 +363,9 @@ Vector3f AC_CustomControl_INDI::update(void)
     Vector3f w_ff, dw_ff;
     Vector3f log_ref_p, log_meas_p;   // INDB: reference vs measured position
     float log_tcmd = 0.0f;            // INDB: outer-loop collective thrust cmd
+    // Clear the Layer-B attitude override each loop; set only if the outer
+    // loop runs below (consumed by Copter::update_flight_mode this same loop).
+    _ovr_valid = false;
 #if AP_DDS_ENABLED
     AP_DDS_Client *dds = AP_DDS_Client::get_singleton();
     AP_DDS_Client::FlatRef ref;
@@ -440,6 +443,14 @@ Vector3f AC_CustomControl_INDI::update(void)
             log_meas_p = p;
             log_tcmd = os.T_cmd;
             outer_active = true;
+            // Publish the flatness target so Copter::update_flight_mode drives
+            // it into AC_AttitudeControl this loop: the stock rate controller
+            // then tracks the SAME target the INDI increment refines (otherwise
+            // the guided target and the increment oppose -> ~0 roll/pitch
+            // torque). rs.w is the reference body-rate feedforward.
+            _ovr_q_ref = attitude_target;
+            _ovr_w_ff = rs.w;
+            _ovr_valid = true;
         }
     }
 #endif // AP_DDS_ENABLED
@@ -533,6 +544,16 @@ void AC_CustomControl_INDI::reset(void)
 {
     _rate_loop.reset();
     _rate_loop_configured = false;
+}
+
+bool AC_CustomControl_INDI::get_attitude_override(Quaternion &q_ref, Vector3f &ang_vel_body) const
+{
+    if (!_ovr_valid) {
+        return false;
+    }
+    q_ref = _ovr_q_ref;
+    ang_vel_body = _ovr_w_ff;
+    return true;
 }
 
 #endif  // AP_CUSTOMCONTROL_INDI_ENABLED

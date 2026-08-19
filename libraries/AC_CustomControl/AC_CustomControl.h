@@ -33,6 +33,11 @@ public:
     bool is_safe_to_run(void);
     void log_switch(void);
 
+    // Layer-B: fetch the active backend's flatness attitude target (if any) so
+    // Copter::update_flight_mode can command it to AC_AttitudeControl this loop.
+    // Returns false when no backend is running or none is producing an override.
+    bool get_attitude_override(Quaternion &q_ref, Vector3f &ang_vel_body);
+
     // set the PID notch sample rates
     void set_notch_sample_rate(float sample_rate);
 

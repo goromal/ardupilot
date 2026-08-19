@@ -88,6 +88,9 @@ public:
     Vector3f update(void) override;
     void reset(void) override;
 
+    // Layer-B: the flatness attitude target for this loop (see _ovr_* members).
+    bool get_attitude_override(Quaternion &q_ref, Vector3f &ang_vel_body) const override;
+
     // Tilt-prioritized attitude -> desired body-rate reference (Task 2).
     // Pure function (no member state) so it is unit-testable directly. q and
     // q_ref are body->NED quaternions [w,x,y,z]; returns a body-frame rate
@@ -163,6 +166,16 @@ protected:
     // previous-tick closed-form w_z for the inter-tick dw_z feedforward.
     float _prev_wz = 0.0f;
     bool _have_prev_wz = false;
+
+    // Layer-B attitude override published to Copter::update_flight_mode
+    // (mode-agnostic hook): the flatness q_ref + body-rate FF for
+    // AC_AttitudeControl, so the stock rate controller tracks the SAME target
+    // the INDI increment refines. Without this the guided attitude target and
+    // the INDI increment oppose and cancel (~0 net roll/pitch torque). Cleared
+    // at the top of every update(); set only when the outer loop runs.
+    Quaternion _ovr_q_ref;
+    Vector3f _ovr_w_ff;
+    bool _ovr_valid = false;
 };
 
 #endif  // AP_CUSTOMCONTROL_INDI_ENABLED

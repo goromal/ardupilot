@@ -93,6 +93,18 @@ void AC_CustomControl::update(void)
     }
 }
 
+// Layer-B: fetch the backend's flatness attitude target (if any) so
+// Copter::update_flight_mode can command it to AC_AttitudeControl this loop.
+// Gated on is_safe_to_run() so a stale target is never used once custom control
+// disengages (the backend clears its validity flag at the top of each update()).
+bool AC_CustomControl::get_attitude_override(Quaternion &q_ref, Vector3f &ang_vel_body)
+{
+    if (_backend == nullptr || !is_safe_to_run()) {
+        return false;
+    }
+    return _backend->get_attitude_override(q_ref, ang_vel_body);
+}
+
 // choose which axis to apply custom controller output
 void AC_CustomControl::motor_set(Vector3f rpy) {
     if (_custom_controller_mask & (uint8_t)CustomControlOption::ROLL) {

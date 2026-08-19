@@ -418,6 +418,22 @@ void Copter::update_flight_mode()
     pos_control->set_reset_handling_method(flightmode->move_vehicle_on_ekf_reset() ? AC_PosControl::EKFResetMethod::MoveVehicle : AC_PosControl::EKFResetMethod::MoveTarget);
 
     flightmode->run();
+
+#if AC_CUSTOMCONTROL_MULTI_ENABLED
+    // Layer-B (S3 INDI outer loop): when active it computes a flatness attitude
+    // target. Command it to AC_AttitudeControl here -- AFTER the flight mode's
+    // own attitude command -- so next loop's rate controller tracks the SAME
+    // target the INDI increment (run in run_custom_controller) refines. Without
+    // this, the guided attitude target and the INDI increment oppose and cancel
+    // (~0 roll/pitch torque; the vehicle yaws in place instead of tracking).
+    {
+        Quaternion q_ref;
+        Vector3f ang_vel_body;
+        if (custom_control.get_attitude_override(q_ref, ang_vel_body)) {
+            attitude_control->input_quaternion(q_ref, ang_vel_body);
+        }
+    }
+#endif
 }
 
 // exit_mode - high level call to organise cleanup as a flight mode is exited

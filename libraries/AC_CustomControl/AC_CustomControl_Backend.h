@@ -28,6 +28,12 @@ public:
     // set the PID notch sample rates
     virtual void set_notch_sample_rate(float sample_rate) {};
 
+    // Layer-B: expose a flatness attitude target for Copter::update_flight_mode
+    // to push into AC_AttitudeControl, so the stock rate controller tracks the
+    // SAME target the custom (INDI) increment refines. Returns false unless a
+    // backend is actively producing one this loop.
+    virtual bool get_attitude_override(Quaternion &q_ref, Vector3f &ang_vel_body) const { return false; }
+
 protected:
     // References to external libraries
     AP_AHRS_View*& _ahrs;
