@@ -104,9 +104,14 @@ public:
 
     // Reconstruct normalized body-torque actuator state (same [-1,1] space as
     // the stock mixer get_roll/pitch/yaw) from per-motor normalized rotor
-    // thrust omega2_norm[i] = Omega_i^2 / Omega_max^2. Factors match the
-    // backend params.py::mixer(), motor order [FR,BL,FL,BR], spin d=[+1,+1,-1,-1].
-    static void measured_actuator_torque(const float omega2_norm[4], Vector3f &u_meas);
+    // thrust omega2_norm[i] = Omega_i^2 / Omega_max^2, by projecting onto the
+    // mixer's OWN per-motor factor vectors and normalizing by sum(f^2):
+    //   axis = sum(f[i]*omega2_norm[i]) / sum(f[i]^2).
+    // roll_f/pitch_f come from AP_MotorsMatrix::get_roll_factor/get_pitch_factor
+    // (any frame); yaw_f is the normalized quad-X yaw pattern (no accessor).
+    static void measured_actuator_torque(const float omega2_norm[4],
+                                         const float roll_f[4], const float pitch_f[4],
+                                         const float yaw_f[4], Vector3f &u_meas);
 
     // Layer-C Task 5: G2 rotor-inertia yaw-reaction correction, in the same
     // normalized yaw units as measured_actuator_torque()'s u_meas.z. Sign

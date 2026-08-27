@@ -292,28 +292,49 @@ TEST(INDIRateLoop, FilterThenDiffConstantGyroZeroDomega)
 // Oracle: params.py::mixer() quad-X normalized factors (see the
 // measured_actuator_torque doc comment in AC_CustomControl_INDI.h).
 
+// ArduPilot quad-X normalized mixer factors (from AP_MotorsMatrix after
+// normalise_rpy_factors): roll/pitch +/-1, yaw +/-0.5. The reconstruction must
+// project onto these and divide by sum(f^2) (4 for roll/pitch, 1 for yaw), so a
+// full-authority differential recovers the SAME [-1,1] value as get_roll/pitch.
+static const float RF_X[4] = { -1.0f, +1.0f, +1.0f, -1.0f };
+static const float PF_X[4] = { +1.0f, -1.0f, +1.0f, -1.0f };
+static const float YF_X[4] = { +0.5f, +0.5f, -0.5f, -0.5f };
+
 TEST(AC_CustomControl_INDI, measured_actuator_torque_hover_is_zero)
 {
     const float o2[4] = {0.5f, 0.5f, 0.5f, 0.5f};   // uniform -> no net torque
     Vector3f u;
-    AC_CustomControl_INDI::measured_actuator_torque(o2, u);
+    AC_CustomControl_INDI::measured_actuator_torque(o2, RF_X, PF_X, YF_X, u);
     EXPECT_NEAR(u.x, 0.0f, 1e-6f);
     EXPECT_NEAR(u.y, 0.0f, 1e-6f);
     EXPECT_NEAR(u.z, 0.0f, 1e-6f);
 }
-TEST(AC_CustomControl_INDI, measured_actuator_torque_roll_sign)
+TEST(AC_CustomControl_INDI, measured_actuator_torque_roll_magnitude)
 {
-    const float o2[4] = {0.8f, 0.2f, 0.2f, 0.8f};   // right side (idx0,3) up
-    Vector3f u; AC_CustomControl_INDI::measured_actuator_torque(o2, u);
-    EXPECT_GT(fabsf(u.x), 0.1f);      // expect -0.6
-    EXPECT_NEAR(u.y, 0.0f, 1e-6f);
+    // right side (idx0,3) up: sum(rf*o2) = -1.2, /sum(rf^2)=4 -> roll = -0.3
+    // (the SAME value get_roll would report; the old un-normalized code gave
+    // -0.6, so this magnitude assertion is what catches that 2x bug).
+    const float o2[4] = {0.8f, 0.2f, 0.2f, 0.8f};
+    Vector3f u; AC_CustomControl_INDI::measured_actuator_torque(o2, RF_X, PF_X, YF_X, u);
+    EXPECT_NEAR(u.x, -0.3f, 1e-5f);
+    EXPECT_NEAR(u.y,  0.0f, 1e-6f);   // balanced fore/aft -> no pitch
 }
-TEST(AC_CustomControl_INDI, measured_actuator_torque_pitch_sign)
+TEST(AC_CustomControl_INDI, measured_actuator_torque_pitch_magnitude)
 {
-    const float o2[4] = {0.8f, 0.2f, 0.8f, 0.2f};   // front (idx0,2) up
-    Vector3f u; AC_CustomControl_INDI::measured_actuator_torque(o2, u);
-    EXPECT_GT(fabsf(u.y), 0.1f);      // expect +1.2
-    EXPECT_NEAR(u.x, 0.0f, 1e-6f);
+    // front (idx0,2) up: sum(pf*o2) = 1.2, /4 -> pitch = +0.3
+    const float o2[4] = {0.8f, 0.2f, 0.8f, 0.2f};
+    Vector3f u; AC_CustomControl_INDI::measured_actuator_torque(o2, RF_X, PF_X, YF_X, u);
+    EXPECT_NEAR(u.y, +0.3f, 1e-5f);
+    EXPECT_NEAR(u.x,  0.0f, 1e-6f);   // balanced left/right -> no roll
+}
+TEST(AC_CustomControl_INDI, measured_actuator_torque_yaw_magnitude)
+{
+    // CCW pair (idx0,1) up: sum(yf*o2) = 0.6, /sum(yf^2)=1 -> yaw = +0.6
+    const float o2[4] = {0.8f, 0.8f, 0.2f, 0.2f};
+    Vector3f u; AC_CustomControl_INDI::measured_actuator_torque(o2, RF_X, PF_X, YF_X, u);
+    EXPECT_NEAR(u.z, +0.6f, 1e-5f);
+    EXPECT_NEAR(u.x,  0.0f, 1e-6f);
+    EXPECT_NEAR(u.y,  0.0f, 1e-6f);
 }
 
 // ---- Task 5: G2 rotor-inertia yaw-reaction correction ---------------------

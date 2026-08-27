@@ -257,22 +257,33 @@ Vector3f AC_CustomControl_INDI::attitude_rate_ref(const Quaternion &q, const Qua
 }
 
 // --- Layer-C Task 4: measured actuator-state reconstruction (torque-space) -
-// u_meas = B_torque . omega2_norm, quad-X normalized factors derived from
-// indi_harness params.py::mixer(): tau_x = -kf*ry with ry=[a,-a,-a,a] ->
-// roll_f ~ -ry = [-,+,+,-]; tau_y = +kf*rx with rx=[a,-a,a,-a] -> pitch_f ~
-// +rx = [+,-,+,-]; tau_z = d*km with d=[+1,+1,-1,-1] -> yaw_f = d/2. Motor
-// order [FR,BL,FL,BR] (matches the stock quad-X mixer).
-void AC_CustomControl_INDI::measured_actuator_torque(const float omega2_norm[4], Vector3f &u_meas)
+// Recover the normalized roll/pitch/yaw actuator state (the SAME [-1,1] space
+// as the stock mixer's get_roll/pitch/yaw) from the per-motor normalized rotor
+// thrust omega2_norm[i] = Omega_i^2/Omega_max^2 (== the mixer's per-motor
+// _thrust_rpyt_out[i]). The stock mixer's forward map is
+//   thrust[i] = throttle + roll*rf[i] + pitch*pf[i] + yaw*yf[i]
+// so each axis is recovered by projecting onto that axis's factor vector and
+// normalizing by its squared norm:  axis = sum(f[i]*thrust[i]) / sum(f[i]^2).
+// The factor vectors MUST be the mixer's own (rf/pf/yf passed in from
+// AP_MotorsMatrix::get_roll_factor/get_pitch_factor), otherwise the recovered
+// value is off by sum(f^2) and mis-scales the INDI operating point. (An earlier
+// version hardcoded +/-0.5 without the /sum(f^2) normalization, which doubled
+// the roll/pitch operating point and destabilized the loop.)
+void AC_CustomControl_INDI::measured_actuator_torque(const float omega2_norm[4],
+                                                     const float roll_f[4],
+                                                     const float pitch_f[4],
+                                                     const float yaw_f[4],
+                                                     Vector3f &u_meas)
 {
-    static const float roll_f[4]  = { -0.5f, +0.5f, +0.5f, -0.5f };
-    static const float pitch_f[4] = { +0.5f, -0.5f, +0.5f, -0.5f };
-    static const float yaw_f[4]   = { +0.5f, +0.5f, -0.5f, -0.5f };  // d/2
-    u_meas.zero();
+    float rx = 0, ry = 0, rz = 0, rf2 = 0, pf2 = 0, yf2 = 0;
     for (uint8_t i = 0; i < 4; i++) {
-        u_meas.x += roll_f[i]  * omega2_norm[i];
-        u_meas.y += pitch_f[i] * omega2_norm[i];
-        u_meas.z += yaw_f[i]   * omega2_norm[i];
+        rx += roll_f[i]  * omega2_norm[i];  rf2 += roll_f[i]  * roll_f[i];
+        ry += pitch_f[i] * omega2_norm[i];  pf2 += pitch_f[i] * pitch_f[i];
+        rz += yaw_f[i]   * omega2_norm[i];  yf2 += yaw_f[i]   * yaw_f[i];
     }
+    u_meas.x = rf2 > 1e-6f ? rx / rf2 : 0.0f;
+    u_meas.y = pf2 > 1e-6f ? ry / pf2 : 0.0f;
+    u_meas.z = yf2 > 1e-6f ? rz / yf2 : 0.0f;
 }
 
 // --- Layer-C Task 5: G2 rotor-inertia yaw-reaction correction --------------
@@ -586,8 +597,17 @@ Vector3f AC_CustomControl_INDI::update(void)
         }
         _have_prev_omega = true;
         if (healthy) {
+            // Gather the stock mixer's own per-motor factors so the recovered
+            // actuator state lands in the SAME normalized space as get_roll/
+            // pitch/yaw. yaw has no accessor; use the normalized quad-X pattern.
+            float roll_f[4], pitch_f[4];
+            static const float yaw_f[4] = { +0.5f, +0.5f, -0.5f, -0.5f };
+            for (uint8_t i = 0; i < 4; i++) {
+                roll_f[i]  = _motors->get_roll_factor(i);
+                pitch_f[i] = _motors->get_pitch_factor(i);
+            }
             Vector3f u_meas;
-            measured_actuator_torque(o2n, u_meas);
+            measured_actuator_torque(o2n, roll_f, pitch_f, yaw_f, u_meas);
             u_meas.z += g2_yaw_correction(odot_log, _g2_yaw);
             u_act = u_meas;
         } else {
