@@ -129,7 +129,11 @@ const AP_Param::GroupInfo AC_CustomControl_INDI::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("USE_RPM", 17, AC_CustomControl_INDI, _use_rpm, 0),
 
-    // index 18 reserved for CC3_G2_YAW (Task 5).
+    // @Param: G2_YAW
+    // @DisplayName: INDI rotor-inertia yaw-reaction coefficient
+    // @Description: Normalized yaw correction subtracted from the measured actuator state: u_act.z -= G2_YAW * sum(d_i * OmegaDot_i). 0 disables. Only active with USE_RPM=1. Seed analytically (Ir-derived), confirm via sysid.
+    // @User: Advanced
+    AP_GROUPINFO("G2_YAW", 18, AC_CustomControl_INDI, _g2_yaw, 0.0f),
 
     // @Param: SIM_QNT
     // @DisplayName: INDI RPM shim quantization (SITL only)
@@ -271,6 +275,19 @@ void AC_CustomControl_INDI::measured_actuator_torque(const float omega2_norm[4],
     }
 }
 
+// --- Layer-C Task 5: G2 rotor-inertia yaw-reaction correction --------------
+// -g2 * sum(d_i * Omega_dot_i), d=[+1,+1,-1,-1] (motor order [FR,BL,FL,BR],
+// same spin convention as measured_actuator_torque's yaw_f*2).
+float AC_CustomControl_INDI::g2_yaw_correction(const float omega_dot[4], float g2)
+{
+    static const float d[4] = { +1.0f, +1.0f, -1.0f, -1.0f };
+    float s = 0.0f;
+    for (uint8_t i = 0; i < 4; i++) {
+        s += d[i] * omega_dot[i];
+    }
+    return -g2 * s;
+}
+
 // --- Layer-A INDI rate loop (Task 3) ---------------------------------------
 
 void AC_INDI_RateLoop::configure(float cutoff_hz, float sample_freq,
@@ -403,6 +420,12 @@ Vector3f AC_CustomControl_INDI::update(void)
         // constant is fine here (calibrated at Task 8).
         const float aff_a = 490.0f / 0.3f;  // ~hover omega [rad/s] / hover throttle
         _rpm_shim.configure(_sim_qnt, _sim_drop, (uint8_t)_sim_lat, aff_a, 0.0f);
+
+        // Task 5: per-motor Omega filter (filter-then-diff), same cutoff
+        // (CC3_OMG_FILT) as the rate loop's estimator for consistency.
+        for (uint8_t i = 0; i < 4; i++) {
+            _f_omega[i].set_cutoff_frequency(1.0f / _dt, _omg_filt);
+        }
     }
 
     // Outer loop -> desired body rate via the Task-2 tilt-prioritized reference.
@@ -535,6 +558,8 @@ Vector3f AC_CustomControl_INDI::update(void)
     // The shim's get() MUST be called exactly once per motor per tick (it
     // advances a latency ring + PRNG).
     _rpm_fallback = false;
+    float omega_log[4] {};   // INDC: measured rotor speed, per motor (0 on non-RPM/fallback path)
+    float odot_log[4] {};    // INDC: measured rotor angular accel, per motor (ditto)
     if (_use_rpm) {
         float o2n[4];
         bool healthy = true;
@@ -550,10 +575,20 @@ Vector3f AC_CustomControl_INDI::update(void)
                 healthy = false;
             }
             o2n[i] = constrain_float((omega * omega) / _omega2_max, 0.0f, 1.0f);
+
+            // Task 5: Omega_dot_meas, filter-then-diff, computed in this SAME
+            // single get() pass (a second shim.get() loop would double-advance
+            // the shim's latency ring + PRNG).
+            omega_log[i] = omega;
+            const float of = _f_omega[i].apply(omega);
+            odot_log[i] = _have_prev_omega ? (of - _prev_omega_f[i]) / _dt : 0.0f;
+            _prev_omega_f[i] = of;
         }
+        _have_prev_omega = true;
         if (healthy) {
             Vector3f u_meas;
             measured_actuator_torque(o2n, u_meas);
+            u_meas.z += g2_yaw_correction(odot_log, _g2_yaw);
             u_act = u_meas;
         } else {
             _rpm_fallback = true;   // keep previous-command u_act
@@ -597,6 +632,34 @@ Vector3f AC_CustomControl_INDI::update(void)
         u_cmd.x - u_filt.x, u_cmd.y - u_filt.y, u_cmd.z - u_filt.z,
         (int32_t)sat);
 
+    // Layer-C Task 5: per-motor measured-RPM health (design-doc L). Per-motor
+    // Omega and Omega_dot (filter-then-diff, zero on the non-RPM path since
+    // the whole CC3_USE_RPM block is skipped), the reconstructed u_act this
+    // tick (previous-command estimate on the non-RPM/fallback path), and the
+    // fallback flag. Read back by indi_harness read_indc_health().
+    // @LoggerMessage: INDC
+    // @Description: INDI Layer-C C2 measured-RPM health
+    // @Field: TimeUS: Time since system startup
+    // @Field: O0: measured rotor speed 0 [rad/s]
+    // @Field: O1: measured rotor speed 1 [rad/s]
+    // @Field: O2: measured rotor speed 2 [rad/s]
+    // @Field: O3: measured rotor speed 3 [rad/s]
+    // @Field: D0: measured rotor angular accel 0 [rad/s^2]
+    // @Field: D1: measured rotor angular accel 1 [rad/s^2]
+    // @Field: D2: measured rotor angular accel 2 [rad/s^2]
+    // @Field: D3: measured rotor angular accel 3 [rad/s^2]
+    // @Field: Ux: reconstructed normalized actuator roll
+    // @Field: Uy: reconstructed normalized actuator pitch
+    // @Field: Uz: reconstructed normalized actuator yaw (incl. G2)
+    // @Field: FB: RPM fallback flag (1 = previous-command fallback)
+    AP::logger().Write(
+        "INDC", "TimeUS,O0,O1,O2,O3,D0,D1,D2,D3,Ux,Uy,Uz,FB",
+        "Qfffffffffffi",
+        AP_HAL::micros64(),
+        omega_log[0], omega_log[1], omega_log[2], omega_log[3],
+        odot_log[0], odot_log[1], odot_log[2], odot_log[3],
+        u_act.x, u_act.y, u_act.z, (int32_t)_rpm_fallback);
+
     // Layer-B outer-loop health (design-doc L). Reference vs measured position,
     // the collective thrust command, and the fallback flag (1 = stock outer
     // loop this tick; the DDS ref was disabled/stale/absent). Read back by
@@ -630,6 +693,10 @@ void AC_CustomControl_INDI::reset(void)
 {
     _rate_loop.reset();
     _rate_loop_configured = false;
+    for (uint8_t i = 0; i < 4; i++) {
+        _f_omega[i].reset();
+    }
+    _have_prev_omega = false;
 }
 
 bool AC_CustomControl_INDI::get_attitude_override(Quaternion &q_ref, Vector3f &ang_vel_body) const

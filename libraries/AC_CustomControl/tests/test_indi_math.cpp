@@ -316,6 +316,17 @@ TEST(AC_CustomControl_INDI, measured_actuator_torque_pitch_sign)
     EXPECT_NEAR(u.x, 0.0f, 1e-6f);
 }
 
+// ---- Task 5: G2 rotor-inertia yaw-reaction correction ---------------------
+// Oracle: -g2 * sum(d_i * odot_i), d=[+1,+1,-1,-1] (motor order [FR,BL,FL,BR]).
+
+TEST(AC_CustomControl_INDI, g2_yaw_correction_sign)
+{
+    const float odot_bal[4] = {10, 10, 10, 10};   // d-weighted sum = 0 -> no correction
+    EXPECT_NEAR(AC_CustomControl_INDI::g2_yaw_correction(odot_bal, 0.01f), 0.0f, 1e-6f);
+    const float odot_ccw[4] = {10, 10, 0, 0};      // CCW pair (d=+1) accel -> negative yaw
+    EXPECT_LT(AC_CustomControl_INDI::g2_yaw_correction(odot_ccw, 0.01f), 0.0f);
+}
+
 // ---- C2/Task 4: RPM-source interface -- SITL shim + staleness fallback ----
 
 // Bernoulli CRC-dropout probability = 1.0: every sample is dropped, so the

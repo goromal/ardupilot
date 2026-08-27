@@ -108,6 +108,12 @@ public:
     // backend params.py::mixer(), motor order [FR,BL,FL,BR], spin d=[+1,+1,-1,-1].
     static void measured_actuator_torque(const float omega2_norm[4], Vector3f &u_meas);
 
+    // Layer-C Task 5: G2 rotor-inertia yaw-reaction correction, in the same
+    // normalized yaw units as measured_actuator_torque()'s u_meas.z. Sign
+    // convention: subtracted from u_act.z (u_act.z -= g2*sum(d_i*odot_i)),
+    // d=[+1,+1,-1,-1] (motor order [FR,BL,FL,BR], matches measured_actuator_torque's yaw_f*2).
+    static float g2_yaw_correction(const float omega_dot[4], float g2);
+
     // user settable parameters
     static const struct AP_Param::GroupInfo var_info[];
 
@@ -176,6 +182,19 @@ protected:
     AP_Float _sim_drop;               // CC3_SIM_DROP: Bernoulli CRC-dropout prob/frame
     AP_Int8  _sim_lat;                // CC3_SIM_LAT: RPM latency in control ticks
     bool _rpm_fallback = false;       // set when CC3_USE_RPM=1 but RPM was unhealthy this tick
+
+    // --- Layer-C Task 5: G2 rotor-inertia yaw-reaction correction ---
+    // Normalized yaw correction subtracted from the measured actuator state:
+    // u_act.z -= CC3_G2_YAW * sum(d_i * OmegaDot_i). 0 disables (backward
+    // compatible). Only active with CC3_USE_RPM=1.
+    AP_Float _g2_yaw;                    // CC3_G2_YAW
+    // Per-motor Omega low-pass (filter-then-diff, cutoff = CC3_OMG_FILT),
+    // computed in the SAME single shim.get() pass Task 4 built -- do NOT add
+    // a second get() loop (it would double-advance the shim's latency ring +
+    // PRNG).
+    LowPassFilter2pFloat _f_omega[4];    // per-motor Omega LPF (filter-then-diff)
+    float _prev_omega_f[4] {};
+    bool  _have_prev_omega = false;
 
     // The INDI rate loop and a one-shot configure guard (params are only valid
     // after load_object_from_eeprom, which runs after construction).
