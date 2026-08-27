@@ -288,6 +288,34 @@ TEST(INDIRateLoop, FilterThenDiffConstantGyroZeroDomega)
     }
 }
 
+// ---- Task 4: measured actuator-state reconstruction (torque-space) --------
+// Oracle: params.py::mixer() quad-X normalized factors (see the
+// measured_actuator_torque doc comment in AC_CustomControl_INDI.h).
+
+TEST(AC_CustomControl_INDI, measured_actuator_torque_hover_is_zero)
+{
+    const float o2[4] = {0.5f, 0.5f, 0.5f, 0.5f};   // uniform -> no net torque
+    Vector3f u;
+    AC_CustomControl_INDI::measured_actuator_torque(o2, u);
+    EXPECT_NEAR(u.x, 0.0f, 1e-6f);
+    EXPECT_NEAR(u.y, 0.0f, 1e-6f);
+    EXPECT_NEAR(u.z, 0.0f, 1e-6f);
+}
+TEST(AC_CustomControl_INDI, measured_actuator_torque_roll_sign)
+{
+    const float o2[4] = {0.8f, 0.2f, 0.2f, 0.8f};   // right side (idx0,3) up
+    Vector3f u; AC_CustomControl_INDI::measured_actuator_torque(o2, u);
+    EXPECT_GT(fabsf(u.x), 0.1f);      // expect -0.6
+    EXPECT_NEAR(u.y, 0.0f, 1e-6f);
+}
+TEST(AC_CustomControl_INDI, measured_actuator_torque_pitch_sign)
+{
+    const float o2[4] = {0.8f, 0.2f, 0.8f, 0.2f};   // front (idx0,2) up
+    Vector3f u; AC_CustomControl_INDI::measured_actuator_torque(o2, u);
+    EXPECT_GT(fabsf(u.y), 0.1f);      // expect +1.2
+    EXPECT_NEAR(u.x, 0.0f, 1e-6f);
+}
+
 // ---- C2/Task 4: RPM-source interface -- SITL shim + staleness fallback ----
 
 // Bernoulli CRC-dropout probability = 1.0: every sample is dropped, so the

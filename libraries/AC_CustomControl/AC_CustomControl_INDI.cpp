@@ -5,6 +5,7 @@
 #include "AC_CustomControl_INDI.h"
 #include <AP_Motors/AP_MotorsMulticopter.h>
 #include <AP_Logger/AP_Logger.h>
+#include <AP_ESC_Telem/AP_ESC_Telem.h>
 #include <AP_DDS/AP_DDS_config.h>
 #if AP_DDS_ENABLED
 #include <AP_DDS/AP_DDS_Client.h>
@@ -121,6 +122,33 @@ const AP_Param::GroupInfo AC_CustomControl_INDI::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("B_THR_EN", 16, AC_CustomControl_INDI, _b_thr_en, 1),
 
+    // @Param: USE_RPM
+    // @DisplayName: INDI measured actuator state enable
+    // @Description: 0=previous-command actuator estimate (Layer-A/C1). 1=measured actuator state reconstructed from bidi-eRPM (C2). Falls back to previous-command when RPM telemetry is unhealthy/stale.
+    // @Values: 0:PrevCommand,1:MeasuredRPM
+    // @User: Advanced
+    AP_GROUPINFO("USE_RPM", 17, AC_CustomControl_INDI, _use_rpm, 0),
+
+    // index 18 reserved for CC3_G2_YAW (Task 5).
+
+    // @Param: SIM_QNT
+    // @DisplayName: INDI RPM shim quantization (SITL only)
+    // @Description: SITL bidi-DShot shim eRPM quantization step (LSB). 0 disables quantization.
+    // @User: Advanced
+    AP_GROUPINFO("SIM_QNT", 19, AC_CustomControl_INDI, _sim_qnt, 0.0f),
+
+    // @Param: SIM_DROP
+    // @DisplayName: INDI RPM shim dropout probability (SITL only)
+    // @Description: SITL bidi-DShot shim Bernoulli CRC-dropout probability per sample, in [0,1].
+    // @User: Advanced
+    AP_GROUPINFO("SIM_DROP", 20, AC_CustomControl_INDI, _sim_drop, 0.0f),
+
+    // @Param: SIM_LAT
+    // @DisplayName: INDI RPM shim latency (SITL only)
+    // @Description: SITL bidi-DShot shim latency, in control-loop ticks.
+    // @User: Advanced
+    AP_GROUPINFO("SIM_LAT", 21, AC_CustomControl_INDI, _sim_lat, 0),
+
     AP_GROUPEND
 };
 
@@ -222,6 +250,25 @@ Vector3f AC_CustomControl_INDI::attitude_rate_ref(const Quaternion &q, const Qua
         float(kt*lr[0] + ky*ly[0] + (double)w_ff.x),
         float(kt*lr[1] + ky*ly[1] + (double)w_ff.y),
         float(kt*lr[2] + ky*ly[2] + (double)w_ff.z));
+}
+
+// --- Layer-C Task 4: measured actuator-state reconstruction (torque-space) -
+// u_meas = B_torque . omega2_norm, quad-X normalized factors derived from
+// indi_harness params.py::mixer(): tau_x = -kf*ry with ry=[a,-a,-a,a] ->
+// roll_f ~ -ry = [-,+,+,-]; tau_y = +kf*rx with rx=[a,-a,a,-a] -> pitch_f ~
+// +rx = [+,-,+,-]; tau_z = d*km with d=[+1,+1,-1,-1] -> yaw_f = d/2. Motor
+// order [FR,BL,FL,BR] (matches the stock quad-X mixer).
+void AC_CustomControl_INDI::measured_actuator_torque(const float omega2_norm[4], Vector3f &u_meas)
+{
+    static const float roll_f[4]  = { -0.5f, +0.5f, +0.5f, -0.5f };
+    static const float pitch_f[4] = { +0.5f, -0.5f, +0.5f, -0.5f };
+    static const float yaw_f[4]   = { +0.5f, +0.5f, -0.5f, -0.5f };  // d/2
+    u_meas.zero();
+    for (uint8_t i = 0; i < 4; i++) {
+        u_meas.x += roll_f[i]  * omega2_norm[i];
+        u_meas.y += pitch_f[i] * omega2_norm[i];
+        u_meas.z += yaw_f[i]   * omega2_norm[i];
+    }
 }
 
 // --- Layer-A INDI rate loop (Task 3) ---------------------------------------
@@ -349,6 +396,13 @@ Vector3f AC_CustomControl_INDI::update(void)
                              Vector3f(_g1_rp, _g1_rp, _g1_yaw));
         _rate_loop.configure_estimator(_omg_filt, 1.0f / _dt);
         _rate_loop_configured = true;
+
+        // aff_a/aff_b: shim FALLBACK affine model (omega_target = aff_a*thr + aff_b),
+        // only used when telemetry drops (Task 8 dropout sub-case), NOT the clean path.
+        // Seed aff_a so hover throttle maps ~hover rotor speed; aff_b=0. A rough
+        // constant is fine here (calibrated at Task 8).
+        const float aff_a = 490.0f / 0.3f;  // ~hover omega [rad/s] / hover throttle
+        _rpm_shim.configure(_sim_qnt, _sim_drop, (uint8_t)_sim_lat, aff_a, 0.0f);
     }
 
     // Outer loop -> desired body rate via the Task-2 tilt-prioritized reference.
@@ -472,7 +526,39 @@ Vector3f AC_CustomControl_INDI::update(void)
     // torque command (_motors->get_roll/pitch/yaw); outputs are torque-like in
     // the mixer's [-1, 1] range (S3 Layer-A accepts the stock-mixer limitation).
     const Vector3f gyro = _ahrs->get_gyro_latest();
-    const Vector3f u_act(_motors->get_roll(), _motors->get_pitch(), _motors->get_yaw());
+    Vector3f u_act(_motors->get_roll(), _motors->get_pitch(), _motors->get_yaw());
+    // Layer-C Task 4: measured actuator state (CC3_USE_RPM=1). Reconstruct
+    // u_act from per-motor rotor speed instead of the previous mixer command
+    // -- the shipped previous-command estimate is wrong under actuator lag,
+    // which is the limit-cycle root cause this task fixes. Falls back to the
+    // previous-command u_act (above) when RPM telemetry is unhealthy/stale.
+    // The shim's get() MUST be called exactly once per motor per tick (it
+    // advances a latency ring + PRNG).
+    _rpm_fallback = false;
+    if (_use_rpm) {
+        float o2n[4];
+        bool healthy = true;
+        for (uint8_t i = 0; i < 4; i++) {
+            float erpm_esc;
+            if (AP::esc_telem().get_rpm(i, erpm_esc)) {
+                _rpm_shim.set_truth(i, erpm_esc);
+            }
+            _rpm_shim.set_throttle(i, _motors->get_throttle());   // collective 0..1 (base class)
+            float omega;
+            const bool ok = _rpm_shim.get(i, omega) && _rpm_shim.healthy(i);
+            if (!ok) {
+                healthy = false;
+            }
+            o2n[i] = constrain_float((omega * omega) / _omega2_max, 0.0f, 1.0f);
+        }
+        if (healthy) {
+            Vector3f u_meas;
+            measured_actuator_torque(o2n, u_meas);
+            u_act = u_meas;
+        } else {
+            _rpm_fallback = true;   // keep previous-command u_act
+        }
+    }
     Vector3f domega_pred, domega_filt, u_filt;
     bool sat;
     const Vector3f u_cmd = _rate_loop.step(_dt, gyro, u_act, w_des, dw_ff, 1.0f,

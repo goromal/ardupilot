@@ -11,6 +11,7 @@
 
 #include "AC_CustomControl_Backend.h"
 #include "AC_CustomControl_OuterLoop.h"
+#include "AP_INDI_RpmSource.h"
 
 // Layer-A INDI rate loop: filtered angular-accel estimate + phase-matched
 // actuator-state estimate + diagonal-G1 inversion, producing the INDI torque
@@ -101,6 +102,12 @@ public:
     static Vector3f attitude_rate_ref(const Quaternion &q, const Quaternion &q_ref,
                                       float kp_tilt, float kp_yaw, const Vector3f &w_ff);
 
+    // Reconstruct normalized body-torque actuator state (same [-1,1] space as
+    // the stock mixer get_roll/pitch/yaw) from per-motor normalized rotor
+    // thrust omega2_norm[i] = Omega_i^2 / Omega_max^2. Factors match the
+    // backend params.py::mixer(), motor order [FR,BL,FL,BR], spin d=[+1,+1,-1,-1].
+    static void measured_actuator_torque(const float omega2_norm[4], Vector3f &u_meas);
+
     // user settable parameters
     static const struct AP_Param::GroupInfo var_info[];
 
@@ -153,6 +160,22 @@ protected:
     // Drive the collective throttle from the outer loop's thrust command when
     // active (coordinates thrust with tilt). Param CC3_B_THR_EN.
     AP_Int8 _b_thr_en;
+
+    // --- Layer-C Task 4: measured actuator state (bidi-eRPM) ---
+    // 0 = previous-command actuator estimate (Layer-A/C1, byte-for-byte
+    // unchanged). 1 = measured actuator state reconstructed from per-motor
+    // rotor speed via measured_actuator_torque(), falling back to the
+    // previous-command estimate when RPM telemetry is unhealthy/stale.
+    // Param CC3_USE_RPM.
+    AP_Int8 _use_rpm;
+    // Omega_max^2 = 900^2 (rad/s)^2; matches the indi_harness params.Omega_max
+    // normalization used by measured_actuator_torque()'s omega2_norm input.
+    float   _omega2_max = 810000.0f;
+    AP_INDI_RpmSource_Sim _rpm_shim;  // built shim: quant/dropout/latency + fallback
+    AP_Float _sim_qnt;                // CC3_SIM_QNT: eRPM quantization LSB
+    AP_Float _sim_drop;               // CC3_SIM_DROP: Bernoulli CRC-dropout prob/frame
+    AP_Int8  _sim_lat;                // CC3_SIM_LAT: RPM latency in control ticks
+    bool _rpm_fallback = false;       // set when CC3_USE_RPM=1 but RPM was unhealthy this tick
 
     // The INDI rate loop and a one-shot configure guard (params are only valid
     // after load_object_from_eeprom, which runs after construction).
