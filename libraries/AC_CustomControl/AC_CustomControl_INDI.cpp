@@ -561,6 +561,12 @@ Vector3f AC_CustomControl_INDI::update(void)
     // the mixer's [-1, 1] range (S3 Layer-A accepts the stock-mixer limitation).
     const Vector3f gyro = _ahrs->get_gyro_latest();
     Vector3f u_act(_motors->get_roll(), _motors->get_pitch(), _motors->get_yaw());
+    // DIAGNOSTIC (Task 8 debug): the stock previous-command actuator state,
+    // captured before CC3_USE_RPM overwrites u_act, so the .BIN can compare it
+    // tick-for-tick against the reconstructed measured state (INDC Cx/Cy/Cz vs
+    // Ux/Uy/Uz). Reveals whether the reconstruction recovers the command or a
+    // curve/spin-scaling-distorted version of it.
+    const Vector3f u_cmd_prev = u_act;
     // Layer-C Task 4: measured actuator state (CC3_USE_RPM=1). Reconstruct
     // u_act from per-motor rotor speed instead of the previous mixer command
     // -- the shipped previous-command estimate is wrong under actuator lag,
@@ -671,14 +677,18 @@ Vector3f AC_CustomControl_INDI::update(void)
     // @Field: Ux: reconstructed normalized actuator roll
     // @Field: Uy: reconstructed normalized actuator pitch
     // @Field: Uz: reconstructed normalized actuator yaw (incl. G2)
+    // @Field: Cx: stock previous-command actuator roll (diagnostic)
+    // @Field: Cy: stock previous-command actuator pitch (diagnostic)
+    // @Field: Cz: stock previous-command actuator yaw (diagnostic)
     // @Field: FB: RPM fallback flag (1 = previous-command fallback)
     AP::logger().Write(
-        "INDC", "TimeUS,O0,O1,O2,O3,D0,D1,D2,D3,Ux,Uy,Uz,FB",
-        "Qfffffffffffi",
+        "INDC", "TimeUS,O0,O1,O2,O3,D0,D1,D2,D3,Ux,Uy,Uz,Cx,Cy,Cz,FB",
+        "Qffffffffffffffi",
         AP_HAL::micros64(),
         omega_log[0], omega_log[1], omega_log[2], omega_log[3],
         odot_log[0], odot_log[1], odot_log[2], odot_log[3],
-        u_act.x, u_act.y, u_act.z, (int32_t)_rpm_fallback);
+        u_act.x, u_act.y, u_act.z,
+        u_cmd_prev.x, u_cmd_prev.y, u_cmd_prev.z, (int32_t)_rpm_fallback);
 
     // Layer-B outer-loop health (design-doc L). Reference vs measured position,
     // the collective thrust command, and the fallback flag (1 = stock outer
