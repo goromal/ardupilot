@@ -183,6 +183,8 @@ protected:
     // normalization used by measured_actuator_torque()'s omega2_norm input.
     float   _omega2_max = 810000.0f;
     AP_INDI_RpmSource_Sim _rpm_shim;  // built shim: quant/dropout/latency + fallback
+    AP_INDI_RpmSource_ESC _rpm_source;
+    Vector3f _last_output;            // previous custom command, NOT current stock PID
     AP_Float _sim_qnt;                // CC3_SIM_QNT: eRPM quantization LSB
     AP_Float _sim_drop;               // CC3_SIM_DROP: Bernoulli CRC-dropout prob/frame
     AP_Int8  _sim_lat;                // CC3_SIM_LAT: RPM latency in control ticks

@@ -124,8 +124,8 @@ const AP_Param::GroupInfo AC_CustomControl_INDI::var_info[] = {
 
     // @Param: USE_RPM
     // @DisplayName: INDI measured actuator state enable
-    // @Description: 0=previous-command actuator estimate (Layer-A/C1). 1=measured actuator state reconstructed from bidi-eRPM (C2). Falls back to previous-command when RPM telemetry is unhealthy/stale.
-    // @Values: 0:PrevCommand,1:MeasuredRPM
+    // @Description: 0=legacy stock-PID baseline plus INDI correction. 1=measured actuator state reconstructed from RPM (C2). Falls back to the legacy baseline when RPM is older than 20 ms or unhealthy.
+    // @Values: 0:StockPIDBaseline,1:MeasuredRPM
     // @User: Advanced
     AP_GROUPINFO("USE_RPM", 17, AC_CustomControl_INDI, _use_rpm, 0),
 
@@ -137,7 +137,7 @@ const AP_Param::GroupInfo AC_CustomControl_INDI::var_info[] = {
 
     // @Param: SIM_QNT
     // @DisplayName: INDI RPM shim quantization (SITL only)
-    // @Description: SITL bidi-DShot shim eRPM quantization step (LSB). 0 disables quantization.
+    // @Description: SITL RPM shim quantization step in mechanical RPM (after ESC pole conversion). 0 disables quantization.
     // @User: Advanced
     AP_GROUPINFO("SIM_QNT", 19, AC_CustomControl_INDI, _sim_qnt, 0.0f),
 
@@ -556,16 +556,14 @@ Vector3f AC_CustomControl_INDI::update(void)
     const Vector3f w_des = attitude_rate_ref(attitude_body, attitude_target,
                                              _kp_tilt, _kp_yaw, w_ff);
 
-    // Inner loop: INDI rate law. Actuator state is the stock mixer's current
-    // torque command (_motors->get_roll/pitch/yaw); outputs are torque-like in
-    // the mixer's [-1, 1] range (S3 Layer-A accepts the stock-mixer limitation).
+    // Stock rate control runs immediately before this backend and overwrites
+    // get_roll/pitch/yaw. The legacy baseline is CURRENT stock PID output,
+    // not our previous applied command. Preserve it for USE_RPM=0/fallback.
     const Vector3f gyro = _ahrs->get_gyro_latest();
     Vector3f u_act(_motors->get_roll(), _motors->get_pitch(), _motors->get_yaw());
-    // DIAGNOSTIC (Task 8 debug): the stock previous-command actuator state,
-    // captured before CC3_USE_RPM overwrites u_act, so the .BIN can compare it
-    // tick-for-tick against the reconstructed measured state (INDC Cx/Cy/Cz vs
-    // Ux/Uy/Uz). Reveals whether the reconstruction recovers the command or a
-    // curve/spin-scaling-distorted version of it.
+    // INDC Cx/Cy/Cz are current stock PID. INDU separately records the previous
+    // custom output and the new one; correlate actuator state with those only
+    // after accounting for mixer compensation, motor lag and sensor delay.
     const Vector3f u_cmd_prev = u_act;
     // Layer-C Task 4: measured actuator state (CC3_USE_RPM=1). Reconstruct
     // u_act from per-motor rotor speed instead of the previous mixer command
@@ -581,10 +579,9 @@ Vector3f AC_CustomControl_INDI::update(void)
         float o2n[4];
         bool healthy = true;
         for (uint8_t i = 0; i < 4; i++) {
-            float erpm_esc;
-            if (AP::esc_telem().get_rpm(i, erpm_esc)) {
-                _rpm_shim.set_truth(i, erpm_esc);
-            }
+            float omega_esc = 0.0f;
+            const bool source_ok = _rpm_source.get(i, omega_esc);
+            _rpm_shim.set_truth(i, omega_esc * (60.0f / (2.0f * M_PI)), source_ok);
             _rpm_shim.set_throttle(i, _motors->get_throttle());   // collective 0..1 (base class)
             float omega;
             const bool ok = _rpm_shim.get(i, omega) && _rpm_shim.healthy(i);
@@ -601,7 +598,7 @@ Vector3f AC_CustomControl_INDI::update(void)
             odot_log[i] = _have_prev_omega ? (of - _prev_omega_f[i]) / _dt : 0.0f;
             _prev_omega_f[i] = of;
         }
-        _have_prev_omega = true;
+        _have_prev_omega = healthy;
         if (healthy) {
             // Gather the stock mixer's own per-motor factors so the recovered
             // actuator state lands in the SAME normalized space as get_roll/
@@ -626,6 +623,16 @@ Vector3f AC_CustomControl_INDI::update(void)
                                            domega_pred, domega_filt, u_filt, sat);
 
 #if HAL_LOGGING_ENABLED
+    // Ownership/timing diagnostic: stock PID runs BEFORE this backend on the
+    // same tick. P is that current PID output, L the previous custom command,
+    // O the new custom command; R/W are measured/desired body rates [rad/s].
+    AP::logger().Write(
+        "INDU", "TimeUS,Px,Py,Pz,Lx,Ly,Lz,Ox,Oy,Oz,Rx,Ry,Rz,Wx,Wy,Wz",
+        "Qfffffffffffffff", AP_HAL::micros64(),
+        u_cmd_prev.x, u_cmd_prev.y, u_cmd_prev.z,
+        _last_output.x, _last_output.y, _last_output.z,
+        u_cmd.x, u_cmd.y, u_cmd.z,
+        gyro.x, gyro.y, gyro.z, w_des.x, w_des.y, w_des.z);
     // INDI health to the .BIN (design-doc L: the .BIN is source of truth).
     // Predicted vs measured/filtered angular accel is the tell for filter/G1
     // mismatch (they should track); the actuator-state estimate and the INDI
@@ -716,6 +723,7 @@ Vector3f AC_CustomControl_INDI::update(void)
         (int32_t)(!outer_active));
 #endif
 
+    _last_output = u_cmd;
     return u_cmd;
 }
 
@@ -727,6 +735,7 @@ void AC_CustomControl_INDI::reset(void)
         _f_omega[i].reset();
     }
     _have_prev_omega = false;
+    _last_output.zero();
 }
 
 bool AC_CustomControl_INDI::get_attitude_override(Quaternion &q_ref, Vector3f &ang_vel_body) const

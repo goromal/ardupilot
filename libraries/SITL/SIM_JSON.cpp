@@ -499,11 +499,11 @@ void JSON::recv_fdm(const struct sitl_input &input)
         battery_current = state.bat_amp;
     }
 
-    // publish per-motor eRPM (INDI Layer-C measured-actuator-state channel).
-    // sim-only: the JSON backend reports the true lagged rotor speed so the
-    // firmware AP_INDI_RpmSource_ESC path reads it like a real bidi-DShot ESC.
-    if (received_bitmask & (RPM_1 | RPM_2 | RPM_3 | RPM_4)) {
-        for (uint8_t i = 0; i < 4; i++) {
+    // Mechanical RPM, matching AP_ESC_Telem's hardware contract. A missing
+    // motor field must age independently; never refresh it from cached state.
+    for (uint8_t i = 0; i < 4; i++) {
+        if ((received_bitmask & (uint64_t(RPM_1) << i)) &&
+            std::isfinite(state.rpm[i]) && state.rpm[i] >= 0.0f) {
             AP::esc_telem().update_rpm(i, state.rpm[i], 0.0f);
         }
     }
