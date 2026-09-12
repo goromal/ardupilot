@@ -13,7 +13,7 @@
 // AP_INDI_RpmSource is the abstract interface; two implementations:
 //   - AP_INDI_RpmSource_ESC:  hardware backend, reads AP_ESC_Telem.
 //   - AP_INDI_RpmSource_Sim:  SITL shim that degrades an injected "truth"
-//     eRPM signal (quantization, Bernoulli CRC-dropout, latency) the way a
+//     mechanical-RPM signal (quantization, Bernoulli dropout, latency) so
 //     real bidi-DShot link would, so the staleness -> model-fallback logic
 //     is exercised in sim before hardware. On drop/stale the shim falls
 //     back to a first-order throttle-driven model estimate and flags
@@ -40,27 +40,23 @@ public:
     virtual void set_throttle(uint8_t i, float thr) { (void)i; (void)thr; }
 };
 
-// Hardware backend: reads AP::esc_telem().get_rpm() and converts electrical
-// RPM to mechanical rad/s using a configurable pole-pair divisor.
+// AP_ESC_Telem contains MECHANICAL RPM: DShot/BLHeli already divide by
+// motor pole pairs before publishing. Do not divide a second time here.
 class AP_INDI_RpmSource_ESC : public AP_INDI_RpmSource {
 public:
-    // number of magnet pole PAIRS on the motor: mechanical_rpm = erpm / pole_pairs.
-    void set_pole_pairs(float pole_pairs) { _pole_pairs = MAX(pole_pairs, 1.0f); }
-
     bool get(uint8_t i, float &omega) override;
     bool healthy(uint8_t i) override;
 
 private:
-    float _pole_pairs = 1.0f;
     bool _healthy_last[AP_MOTORS_MAX_NUM_MOTORS] {};
 };
 
-// SITL shim: applies realistic bidi-DShot signal degradation to an injected
-// truth eRPM value, with a deterministic first-order fallback model when the
+// SITL shim: applies link degradation to an injected mechanical-RPM
+// value, with a deterministic first-order fallback model when the
 // (simulated) telemetry sample is dropped or stale.
 class AP_INDI_RpmSource_Sim : public AP_INDI_RpmSource {
 public:
-    // qnt       : quantization step, in eRPM LSBs (eRPM rounded to nearest qnt).
+    // qnt       : quantization step in mechanical RPM (post ESC pole conversion).
     // drop      : Bernoulli CRC-dropout probability per sample, in [0,1].
     // lat_ticks : latency, in control-loop ticks (ring-buffer depth).
     // aff_a,b   : fallback affine model omega_model_target = aff_a*throttle + aff_b
@@ -68,9 +64,12 @@ public:
     //             affine target whenever telemetry is dropped/stale.
     void configure(float qnt, float drop, uint8_t lat_ticks, float aff_a, float aff_b);
 
-    // inject ground-truth eRPM for motor i (as the "signal" the sim ESC would
-    // report before quantization/dropout/latency are applied).
-    void set_truth(uint8_t i, float erpm) { _truth[i] = erpm; }
+    // Feed the upstream mechanical-RPM sample and its freshness every tick.
+    // A sample is consumed once: omission must not replay cached truth as fresh.
+    void set_truth(uint8_t i, float rpm, bool valid = true) {
+        _truth[i] = rpm;
+        _truth_valid[i] = valid && std::isfinite(rpm) && rpm >= 0.0f;
+    }
 
     void set_throttle(uint8_t i, float thr) override { _thr[i] = thr; }
 
@@ -81,7 +80,7 @@ public:
 private:
     static constexpr uint8_t MAX_LAT = 32;
 
-    float pole_conv(float erpm) const;   // eRPM -> rad/s (pole_pairs = 1 for the shim)
+    float rpm_to_omega(float rpm) const;
     float draw01();                      // deterministic xorshift U[0,1)
 
     // config
@@ -93,16 +92,18 @@ private:
 
     // per-motor state
     float _truth[AP_MOTORS_MAX_NUM_MOTORS] {};
+    bool _truth_valid[AP_MOTORS_MAX_NUM_MOTORS] {};
     float _thr[AP_MOTORS_MAX_NUM_MOTORS] {};
     float _model[AP_MOTORS_MAX_NUM_MOTORS] {};
     bool _fb[AP_MOTORS_MAX_NUM_MOTORS] {};
     bool _healthy_last[AP_MOTORS_MAX_NUM_MOTORS] {};
 
-    // latency ring buffer: per-motor circular delay line of quantized eRPM
+    // latency ring buffer: per-motor circular delay line of quantized RPM
     // samples (dropout is decided fresh each tick, independent of latency --
     // see .cpp for the exact pipeline order). _ring_pushes counts writes
     // (saturating at buflen) so we know when the delay line has filled.
     float _ring[AP_MOTORS_MAX_NUM_MOTORS][MAX_LAT] {};
+    bool _ring_valid[AP_MOTORS_MAX_NUM_MOTORS][MAX_LAT] {};
     uint8_t _ring_head[AP_MOTORS_MAX_NUM_MOTORS] {};
     uint8_t _ring_pushes[AP_MOTORS_MAX_NUM_MOTORS] {};
 
