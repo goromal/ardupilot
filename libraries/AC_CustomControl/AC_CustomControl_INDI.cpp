@@ -566,10 +566,9 @@ Vector3f AC_CustomControl_INDI::update(void)
     // after accounting for mixer compensation, motor lag and sensor delay.
     const Vector3f u_cmd_prev = u_act;
     // Layer-C Task 4: measured actuator state (CC3_USE_RPM=1). Reconstruct
-    // u_act from per-motor rotor speed instead of the previous mixer command
-    // -- the shipped previous-command estimate is wrong under actuator lag,
-    // which is the limit-cycle root cause this task fixes. Falls back to the
-    // previous-command u_act (above) when RPM telemetry is unhealthy/stale.
+    // u_act from per-motor rotor speed instead of the current stock PID output.
+    // This requires effectiveness gains in the same normalized mixer units.
+    // Falls back to current stock PID u_act when telemetry is unhealthy/stale.
     // The shim's get() MUST be called exactly once per motor per tick (it
     // advances a latency ring + PRNG).
     _rpm_fallback = false;
@@ -614,7 +613,7 @@ Vector3f AC_CustomControl_INDI::update(void)
             u_meas.z += g2_yaw_correction(odot_log, _g2_yaw);
             u_act = u_meas;
         } else {
-            _rpm_fallback = true;   // keep previous-command u_act
+            _rpm_fallback = true;   // keep current stock PID u_act
         }
     }
     Vector3f domega_pred, domega_filt, u_filt;
@@ -668,7 +667,7 @@ Vector3f AC_CustomControl_INDI::update(void)
     // Layer-C Task 5: per-motor measured-RPM health (design-doc L). Per-motor
     // Omega and Omega_dot (filter-then-diff, zero on the non-RPM path since
     // the whole CC3_USE_RPM block is skipped), the reconstructed u_act this
-    // tick (previous-command estimate on the non-RPM/fallback path), and the
+    // tick (current stock PID on the non-RPM/fallback path), and the
     // fallback flag. Read back by indi_harness read_indc_health().
     // @LoggerMessage: INDC
     // @Description: INDI Layer-C C2 measured-RPM health
@@ -684,10 +683,10 @@ Vector3f AC_CustomControl_INDI::update(void)
     // @Field: Ux: reconstructed normalized actuator roll
     // @Field: Uy: reconstructed normalized actuator pitch
     // @Field: Uz: reconstructed normalized actuator yaw (incl. G2)
-    // @Field: Cx: stock previous-command actuator roll (diagnostic)
-    // @Field: Cy: stock previous-command actuator pitch (diagnostic)
-    // @Field: Cz: stock previous-command actuator yaw (diagnostic)
-    // @Field: FB: RPM fallback flag (1 = previous-command fallback)
+    // @Field: Cx: current stock PID roll output (diagnostic)
+    // @Field: Cy: current stock PID pitch output (diagnostic)
+    // @Field: Cz: current stock PID yaw output (diagnostic)
+    // @Field: FB: RPM fallback flag (1 = current stock PID fallback)
     AP::logger().Write(
         "INDC", "TimeUS,O0,O1,O2,O3,D0,D1,D2,D3,Ux,Uy,Uz,Cx,Cy,Cz,FB",
         "Qffffffffffffffi",
