@@ -13,12 +13,12 @@
 #include "AC_CustomControl_OuterLoop.h"
 #include "AP_INDI_RpmSource.h"
 
-// Layer-A INDI rate loop: filtered angular-accel estimate + phase-matched
+// INDI rate loop: filtered angular-accel estimate + phase-matched
 // actuator-state estimate + diagonal-G1 inversion, producing the INDI torque
 // increment u = u_filt + G1^-1 (dw_cmd - domega_filt). The angular-accel
 // filter and the actuator-state filter are built from a SINGLE cutoff so their
 // group delays match (the phase-matching rule -- "the single most important
-// INDI implementation detail"; a mismatch destabilizes the loop, the S2
+// INDI implementation detail"; a mismatch destabilizes the loop, the offboard
 // synchronization lesson, pinned by a regression test).
 class AC_INDI_RateLoop {
 public:
@@ -34,7 +34,7 @@ public:
     void configure_split(float cutoff_domega_hz, float cutoff_uact_hz,
                          float sample_freq, const Vector3f &kw, const Vector3f &g1);
 
-    // C1: select the angular-accel estimator. cutoff_hz > 0 selects
+    // angular-acceleration feedback: select the angular-accel estimator. cutoff_hz > 0 selects
     // filter-then-differentiate (gyro_f = LPF(gyro); domega = d/dt gyro_f),
     // re-pointing the actuator-state filter to the SAME cutoff so the two
     // stay phase-matched. cutoff_hz == 0 restores the legacy
@@ -66,19 +66,19 @@ public:
 private:
     LowPassFilter2pVector3f _f_domega;   // angular-accel estimate (legacy diff-then-filter)
     LowPassFilter2pVector3f _f_uact;     // actuator-state estimate (same cutoff as whichever estimate path is active)
-    LowPassFilter2pVector3f _f_gyro;     // C1: gyro pre-filter (filter-then-differentiate)
+    LowPassFilter2pVector3f _f_gyro;     // angular-acceleration feedback: gyro pre-filter (filter-then-differentiate)
     Vector3f _kw;                        // rate-error -> desired ang-accel gain
     Vector3f _g1_inv;                    // diagonal G1^-1 (rad/s^2 per unit u)
     Vector3f _prev_gyro;                 // legacy path: previous raw gyro
-    Vector3f _prev_gyro_f;               // C1 path: previous filtered gyro
+    Vector3f _prev_gyro_f;               // angular-acceleration feedback path: previous filtered gyro
     bool _have_prev = false;
-    bool _use_ftd = false;               // C1: filter-then-differentiate selected
+    bool _use_ftd = false;               // angular-acceleration feedback: filter-then-differentiate selected
 };
 
-// Layer-A INDI attitude/rate backend (design-doc S3).
+// INDI attitude/rate backend .
 // Replaces only the inner attitude/rate loop: the stock guided-mode
 // position->attitude outer loop still runs and hands us an attitude target.
-// The control math is a C++ port of the tested S0 Python reference
+// The control math is a C++ port of the tested offline Python reference
 // (indi_harness/{tilt_yaw,inner_loop,allocation}.py); see the gtest in
 // tests/test_indi_math.cpp for the oracle values.
 class AC_CustomControl_INDI : public AC_CustomControl_Backend {
@@ -89,10 +89,10 @@ public:
     Vector3f update(void) override;
     void reset(void) override;
 
-    // Layer-B: the flatness attitude target for this loop (see _ovr_* members).
+    // flatness outer loop: the flatness attitude target for this loop (see _ovr_* members).
     bool get_attitude_override(Quaternion &q_ref, Vector3f &ang_vel_body) const override;
 
-    // Tilt-prioritized attitude -> desired body-rate reference (Task 2).
+    // Tilt-prioritized attitude -> desired body-rate reference.
     // Pure function (no member state) so it is unit-testable directly. q and
     // q_ref are body->NED quaternions [w,x,y,z]; returns a body-frame rate
     // command [rad/s]. Direct port of indi_harness.tilt_yaw.attitude_rate_ref:
@@ -113,7 +113,7 @@ public:
                                          const float roll_f[4], const float pitch_f[4],
                                          const float yaw_f[4], Vector3f &u_meas);
 
-    // Layer-C Task 5: G2 rotor-inertia yaw-reaction correction, in the same
+    // actuator feedback G2 rotor-inertia yaw-reaction correction, in the same
     // normalized yaw units as measured_actuator_torque()'s u_meas.z. Sign
     // convention: subtracted from u_act.z (u_act.z -= g2*sum(d_i*odot_i)),
     // d=[+1,+1,-1,-1] (motor order [FR,BL,FL,BR], matches measured_actuator_torque's yaw_f*2).
@@ -126,33 +126,33 @@ protected:
     // controller sample period (s)
     float _dt;
 
-    // --- placeholder params (declared now, wired up in Tasks 2-3) ---
-    // Tilt-prioritized attitude->rate reference gains (Task 2).
+    // --- Controller parameters ---
+    // Tilt-prioritized attitude->rate reference gains.
     AP_Float _kp_tilt;      // tilt (reduced attitude) P gain
     AP_Float _kp_yaw;       // yaw P gain (de-prioritized: keep < _kp_tilt)
 
-    // Shared angular-accel / actuator-state low-pass cutoff (Hz) (Task 3).
+    // Shared angular-accel / actuator-state low-pass cutoff (Hz).
     // A SINGLE cutoff drives BOTH the gyro-derivative filter and the
     // actuator-state filter so their group delays are phase-matched -- the
-    // S2 synchronization lesson. Do not split this into two params.
+    // offboard synchronization lesson. Do not split this into two params.
     AP_Float _filt_hz;
 
-    // G1 control-effectiveness diagonal (Task 3): roll/pitch and yaw.
+    // G1 control-effectiveness diagonal: roll/pitch and yaw.
     AP_Float _g1_rp;
     AP_Float _g1_yaw;
 
-    // Rate-error -> desired angular-accel gain kw (Task 3): roll/pitch and yaw.
+    // Rate-error -> desired angular-accel gain kw: roll/pitch and yaw.
     AP_Float _kw_rp;
     AP_Float _kw_yaw;
 
-    // C1 (Layer C): angular-accel estimator pre-filter cutoff (Hz). >0 selects
+    // Angular-acceleration estimator pre-filter cutoff (Hz). >0 selects
     // filter-then-differentiate (gyro_f = LPF(gyro); domega = d/dt gyro_f) and
     // re-points the actuator-state filter to this SAME cutoff so the two stay
     // phase-matched. 0 = legacy differentiate-then-filter.
     AP_Float _omg_filt;
 
-    // --- Layer-B outer loop params (Task B4) ---
-    // Enable the in-firmware INDI outer loop. 0 = stock guided outer loop (C1
+    // --- flatness outer-loop params ---
+    // Enable the in-firmware INDI outer loop. 0 = stock guided outer loop (angular-acceleration feedback
     // as-is); 1 = run AC_INDI_OuterLoop off a fresh DDS FlatSetpoint. Param
     // CC3_OUTER_EN.
     AP_Int8 _outer_en;
@@ -163,7 +163,7 @@ protected:
     AP_Float _b_kv_xy;
     AP_Float _b_kv_z;
     // Outer-loop INDI specific-force/thrust-state filter cutoff (Hz). The
-    // phase-margin knob swept in Task B5. Param CC3_B_ACC_FILT.
+    // phase-margin tuning parameter. Param CC3_B_ACC_FILT.
     AP_Float _b_acc_filt;
     // Max FlatSetpoint age (ms) before the outer loop falls back to stock.
     // Param CC3_B_DDS_TMO.
@@ -172,29 +172,30 @@ protected:
     // active (coordinates thrust with tilt). Param CC3_B_THR_EN.
     AP_Int8 _b_thr_en;
 
-    // --- Layer-C Task 4: measured actuator state (bidi-eRPM) ---
-    // 0 = previous-command actuator estimate (Layer-A/C1, byte-for-byte
-    // unchanged). 1 = measured actuator state reconstructed from per-motor
-    // rotor speed via measured_actuator_torque(), falling back to the
-    // previous-command estimate when RPM telemetry is unhealthy/stale.
+    // --- Measured actuator state from mechanical RPM ---
+    // 0 = current stock PID output as the INDI baseline. 1 = measured actuator
+    // state reconstructed from per-motor rotor speed via measured_actuator_torque(),
+    // falling back to current stock PID when RPM telemetry is unhealthy/stale.
     // Param CC3_USE_RPM.
     AP_Int8 _use_rpm;
     // Omega_max^2 = 900^2 (rad/s)^2; matches the indi_harness params.Omega_max
     // normalization used by measured_actuator_torque()'s omega2_norm input.
     float   _omega2_max = 810000.0f;
     AP_INDI_RpmSource_Sim _rpm_shim;  // built shim: quant/dropout/latency + fallback
-    AP_Float _sim_qnt;                // CC3_SIM_QNT: eRPM quantization LSB
+    AP_INDI_RpmSource_ESC _rpm_source;
+    Vector3f _last_output;            // previous custom command, NOT current stock PID
+    AP_Float _sim_qnt;                // CC3_SIM_QNT: mechanical RPM quantization LSB
     AP_Float _sim_drop;               // CC3_SIM_DROP: Bernoulli CRC-dropout prob/frame
     AP_Int8  _sim_lat;                // CC3_SIM_LAT: RPM latency in control ticks
     bool _rpm_fallback = false;       // set when CC3_USE_RPM=1 but RPM was unhealthy this tick
 
-    // --- Layer-C Task 5: G2 rotor-inertia yaw-reaction correction ---
+    // --- actuator feedback G2 rotor-inertia yaw-reaction correction ---
     // Normalized yaw correction subtracted from the measured actuator state:
     // u_act.z -= CC3_G2_YAW * sum(d_i * OmegaDot_i). 0 disables (backward
     // compatible). Only active with CC3_USE_RPM=1.
     AP_Float _g2_yaw;                    // CC3_G2_YAW
     // Per-motor Omega low-pass (filter-then-diff, cutoff = CC3_OMG_FILT),
-    // computed in the SAME single shim.get() pass Task 4 built -- do NOT add
+    // computed in the SAME single shim.get() pass built -- do NOT add
     // a second get() loop (it would double-advance the shim's latency ring +
     // PRNG).
     LowPassFilter2pFloat _f_omega[4];    // per-motor Omega LPF (filter-then-diff)
@@ -206,7 +207,7 @@ protected:
     AC_INDI_RateLoop _rate_loop;
     bool _rate_loop_configured = false;
 
-    // Layer-B outer loop + one-shot configure guard. Fed a fresh DDS flat
+    // flatness outer-loop + one-shot configure guard. Fed a fresh DDS flat
     // reference; produces (q_ref, w_ff, dw_ff) replacing the stock target.
     AC_INDI_OuterLoop _outer;
     bool _outer_configured = false;
@@ -214,7 +215,7 @@ protected:
     float _prev_wz = 0.0f;
     bool _have_prev_wz = false;
 
-    // Layer-B attitude override published to Copter::update_flight_mode
+    // flatness outer loop attitude override published to Copter::update_flight_mode
     // (mode-agnostic hook): the flatness q_ref + body-rate FF for
     // AC_AttitudeControl, so the stock rate controller tracks the SAME target
     // the INDI increment refines. Without this the guided attitude target and

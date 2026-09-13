@@ -1,5 +1,5 @@
-// Unit tests for the Layer-A INDI math (design-doc S3), validated against the
-// tested S0 Python reference (indi_harness) used as the oracle. Reference
+// Unit tests for the INDI math , validated against the
+// tested offline Python reference (indi_harness) used as the oracle. Reference
 // vectors were dumped from indi_harness.tilt_yaw.attitude_rate_ref /
 // indi_harness.inner_loop.InnerLoopINDI at build time and hard-coded here.
 #include <AP_gtest.h>
@@ -7,12 +7,14 @@
 #include <AC_CustomControl/AC_CustomControl_INDI.h>
 #include <AC_CustomControl/AC_CustomControl_OuterLoop.h>
 #include <AC_CustomControl/AP_INDI_RpmSource.h>
+#include <AP_Motors/AP_MotorsMatrix.h>
+#include <AP_ESC_Telem/AP_ESC_Telem.h>
 
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
 #if AP_CUSTOMCONTROL_INDI_ENABLED
 
-// ---- Task 2: tilt-prioritized attitude -> desired body rate ---------------
+// ---- tilt-prioritized attitude -> desired body rate ---------------
 // Oracle: indi_harness.tilt_yaw.attitude_rate_ref (scalar-first [w,x,y,z]).
 
 static void check_rate_ref(const char *name,
@@ -94,9 +96,9 @@ TEST(AC_CustomControl_INDI, yaw_deprioritized)
     EXPECT_LT(wy.z, wr.x);  // yaw correction weaker than tilt at equal error
 }
 
-// ---- Task 3: INDI rate loop (angular-accel + phase-matched actuator filter +
+// ---- INDI rate loop (angular-accel + phase-matched actuator filter +
 // diagonal-G1 inversion) --------------------------------------------------
-// Oracle: /tmp/s3a_dump_inner_oracle.py — a Layer-A reduction of
+// Oracle: /tmp/dump_inner_oracle.py — a legacy INDI rate controller reduction of
 // indi_harness.inner_loop.InnerLoopINDI stepped against a toy first-order-motor
 // plant (mirroring tests/test_inner_loop.py), with a Python replica of
 // ArduPilot's DigitalBiquadFilter so the trajectories match to < 1e-3.
@@ -168,7 +170,7 @@ TEST(AC_CustomControl_INDI, indi_rate_step_matches_oracle)
     }
 }
 
-// The S2 synchronization lesson as a firmware regression: the angular-accel
+// The offboard synchronization lesson as a firmware regression: the angular-accel
 // filter and the actuator-state filter MUST share one cutoff (matched group
 // delay). Structural: the production configure() builds both filters with the
 // same cutoff. Behavioural: a deliberately mismatched loop tracks far worse --
@@ -197,7 +199,7 @@ TEST(AC_CustomControl_INDI, indi_phase_match)
     em /= 20.0f;
     ex /= 20.0f;
     EXPECT_LT(em, 1e-3f);           // matched: tight rate tracking
-    EXPECT_GT(ex, 10.0f * em);      // mismatched: error grows (>10x), the S2 tell
+    EXPECT_GT(ex, 10.0f * em);      // mismatched: error grows (>10x), the offboard tell
 }
 
 // update() returns the INDI increment, and saturation is flagged with
@@ -219,10 +221,10 @@ TEST(AC_CustomControl_INDI, indi_saturation_sheds_yaw)
     EXPECT_NEAR(uc.z, 0.0f, 1e-6f);
 }
 
-// ---- C1: filter-then-differentiate angular-accel estimator ----------------
+// ---- angular-acceleration feedback: filter-then-differentiate angular-accel estimator ----------------
 // Filter-agnostic analytic properties (the C++ LowPassFilter2p biquad is a
 // different filter family than the indi_harness Python Butter2 oracle, so we
-// do not bit-match a per-sample trace -- see the Layer-C plan). Any
+// do not bit-match a per-sample trace -- see the actuator feedback plan). Any
 // DC-preserving low-pass satisfies these regardless of its exact coefficients.
 
 // A constant-angular-accel ramp gyro.x = slope*t must, once the filter has
@@ -288,17 +290,40 @@ TEST(INDIRateLoop, FilterThenDiffConstantGyroZeroDomega)
     }
 }
 
-// ---- Task 4: measured actuator-state reconstruction (torque-space) --------
+// ---- measured actuator-state reconstruction (torque-space) --------
 // Oracle: params.py::mixer() quad-X normalized factors (see the
 // measured_actuator_torque doc comment in AC_CustomControl_INDI.h).
 
 // ArduPilot quad-X normalized mixer factors (from AP_MotorsMatrix after
-// normalise_rpy_factors): roll/pitch +/-1, yaw +/-0.5. The reconstruction must
-// project onto these and divide by sum(f^2) (4 for roll/pitch, 1 for yaw), so a
+// normalise_rpy_factors): all axes +/-0.5. The reconstruction must
+// project onto these and divide by sum(f^2) (1 for each axis), so a
 // full-authority differential recovers the SAME [-1,1] value as get_roll/pitch.
-static const float RF_X[4] = { -1.0f, +1.0f, +1.0f, -1.0f };
-static const float PF_X[4] = { +1.0f, -1.0f, +1.0f, -1.0f };
+static const float RF_X[4] = { -0.5f, +0.5f, +0.5f, -0.5f };
+static const float PF_X[4] = { +0.5f, -0.5f, +0.5f, -0.5f };
 static const float YF_X[4] = { +0.5f, +0.5f, -0.5f, -0.5f };
+
+TEST(AC_CustomControl_INDI, ReconstructionUsesActualQuadXFactors)
+{
+    class Matrix : public AP_MotorsMatrix {
+    public:
+        void setup() {
+            // Seed quad-X geometry without init()/SRV-channel hardware setup.
+            for (uint8_t i = 0; i < 4; i++) {
+                motor_enabled[i] = true;
+                _roll_factor[i] = RF_X[i] * sqrtf(2);
+                _pitch_factor[i] = PF_X[i] * sqrtf(2);
+                _yaw_factor[i] = YF_X[i] * 2;
+            }
+            normalise_rpy_factors();
+        }
+    };
+    static Matrix mixer;
+    mixer.setup();
+    for (uint8_t i = 0; i < 4; i++) {
+        EXPECT_NEAR(mixer.get_roll_factor(i), RF_X[i], 1e-6);
+        EXPECT_NEAR(mixer.get_pitch_factor(i), PF_X[i], 1e-6);
+    }
+}
 
 TEST(AC_CustomControl_INDI, measured_actuator_torque_hover_is_zero)
 {
@@ -311,20 +336,18 @@ TEST(AC_CustomControl_INDI, measured_actuator_torque_hover_is_zero)
 }
 TEST(AC_CustomControl_INDI, measured_actuator_torque_roll_magnitude)
 {
-    // right side (idx0,3) up: sum(rf*o2) = -1.2, /sum(rf^2)=4 -> roll = -0.3
-    // (the SAME value get_roll would report; the old un-normalized code gave
-    // -0.6, so this magnitude assertion is what catches that 2x bug).
+    // right side (idx0,3) up: sum(rf*o2) = -0.6, /sum(rf^2)=1.
     const float o2[4] = {0.8f, 0.2f, 0.2f, 0.8f};
     Vector3f u; AC_CustomControl_INDI::measured_actuator_torque(o2, RF_X, PF_X, YF_X, u);
-    EXPECT_NEAR(u.x, -0.3f, 1e-5f);
+    EXPECT_NEAR(u.x, -0.6f, 1e-5f);
     EXPECT_NEAR(u.y,  0.0f, 1e-6f);   // balanced fore/aft -> no pitch
 }
 TEST(AC_CustomControl_INDI, measured_actuator_torque_pitch_magnitude)
 {
-    // front (idx0,2) up: sum(pf*o2) = 1.2, /4 -> pitch = +0.3
+    // front (idx0,2) up: sum(pf*o2) = 0.6, /1 -> pitch = +0.6
     const float o2[4] = {0.8f, 0.2f, 0.8f, 0.2f};
     Vector3f u; AC_CustomControl_INDI::measured_actuator_torque(o2, RF_X, PF_X, YF_X, u);
-    EXPECT_NEAR(u.y, +0.3f, 1e-5f);
+    EXPECT_NEAR(u.y, +0.6f, 1e-5f);
     EXPECT_NEAR(u.x,  0.0f, 1e-6f);   // balanced left/right -> no roll
 }
 TEST(AC_CustomControl_INDI, measured_actuator_torque_yaw_magnitude)
@@ -337,7 +360,7 @@ TEST(AC_CustomControl_INDI, measured_actuator_torque_yaw_magnitude)
     EXPECT_NEAR(u.y,  0.0f, 1e-6f);
 }
 
-// ---- Task 5: G2 rotor-inertia yaw-reaction correction ---------------------
+// ---- G2 rotor-inertia yaw-reaction correction ---------------------
 // Oracle: -g2 * sum(d_i * odot_i), d=[+1,+1,-1,-1] (motor order [FR,BL,FL,BR]).
 
 TEST(AC_CustomControl_INDI, g2_yaw_correction_sign)
@@ -348,7 +371,7 @@ TEST(AC_CustomControl_INDI, g2_yaw_correction_sign)
     EXPECT_LT(AC_CustomControl_INDI::g2_yaw_correction(odot_ccw, 0.01f), 0.0f);
 }
 
-// ---- C2/Task 4: RPM-source interface -- SITL shim + staleness fallback ----
+// ---- measured-RPM feedback/RPM-source interface -- SITL shim + staleness fallback ----
 
 // Bernoulli CRC-dropout probability = 1.0: every sample is dropped, so the
 // shim must always report unhealthy and always substitute the first-order
@@ -398,7 +421,141 @@ TEST(AP_INDI_RpmSource, ShimNoDropoutQuantizedConversion)
     EXPECT_NEAR(om, expect_omega, 1e-2f);
 }
 
-// ---- Task B1: differential-flatness map (outer loop, part 1) ---------------
+TEST(AP_INDI_RpmSource, MissingStaleAndRecovery)
+{
+    AP_INDI_RpmSource_Sim shim;
+    shim.configure(0, 0, 0, 1600, 0);
+    float om = 0;
+    shim.get(0, om);
+    EXPECT_FALSE(shim.healthy(0));  // no source has ever supplied motor 0
+    shim.set_truth(0, 6000);
+    shim.get(0, om);
+    EXPECT_TRUE(shim.healthy(0));
+    for (unsigned i = 0; i < 400; i++) {
+        shim.set_truth(1, 6000);  // another motor cannot refresh motor 0
+        shim.get(1, om);
+        shim.get(0, om);
+        EXPECT_FALSE(shim.healthy(0));
+        EXPECT_TRUE(shim.used_fallback(0));
+    }
+    shim.set_truth(0, 6000, false);  // cached upstream value, explicitly stale
+    shim.get(0, om);
+    EXPECT_FALSE(shim.healthy(0));
+    shim.set_truth(0, NAN);
+    shim.get(0, om);
+    EXPECT_FALSE(shim.healthy(0));
+    EXPECT_TRUE(std::isfinite(om));
+    shim.set_truth(0, 6000);
+    shim.get(0, om);
+    EXPECT_TRUE(shim.healthy(0));
+    EXPECT_NEAR(om, 200 * M_PI, .01);
+}
+
+TEST(AP_INDI_RpmSource, EscMechanicalRpmFreshness)
+{
+    static AP_ESC_Telem telem;
+    AP_INDI_RpmSource_ESC source;
+    float omega = 0;
+    EXPECT_FALSE(source.get(0, omega));
+    telem.update_rpm(0, 6000, 0);  // driver already converted eRPM / pole pairs
+    EXPECT_TRUE(source.get(0, omega));
+    EXPECT_NEAR(omega, 200 * M_PI, .01);  // raw sample, no monitor slew or pole division
+    hal.scheduler->delay(25);
+    telem.update_rpm(1, 6000, 0);
+    EXPECT_FALSE(source.get(0, omega));
+    EXPECT_TRUE(source.get(1, omega));
+    telem.update_rpm(0, 3000, 0);
+    EXPECT_TRUE(source.get(0, omega));
+    EXPECT_NEAR(omega, 100 * M_PI, .01);
+}
+
+TEST(AP_INDI_RpmSource, DelayedInvalidSampleIsNotFresh)
+{
+    AP_INDI_RpmSource_Sim shim;
+    shim.configure(0, 0, 2, 1600, 0);
+    float om = 0;
+    for (unsigned i = 0; i < 5; i++) {
+        shim.set_truth(0, 6000);
+        shim.get(0, om);
+    }
+    EXPECT_TRUE(shim.healthy(0));
+    shim.set_truth(0, 6000, false);
+    shim.get(0, om);
+    EXPECT_FALSE(shim.healthy(0));
+    for (unsigned i = 0; i < 2; i++) {
+        shim.set_truth(0, 6000);
+        shim.get(0, om);
+    }
+    EXPECT_FALSE(shim.healthy(0));  // invalid sample emerges from delay line
+    shim.set_truth(0, 6000);
+    shim.get(0, om);
+    EXPECT_TRUE(shim.healthy(0));
+}
+
+TEST(INDIRateLoop, MeasuredTorqueWithMotorLag)
+{
+    // Production rate-law/filter implementation, 400 Hz, 30 ms actuator lag,
+    // 20 Hz upstream INS filtering and normalized quad-X effectiveness.
+    // This is a counterexample to an inherent torque-space instability;
+    // it is not a substitute for the full firmware flight gate.
+    AC_INDI_RateLoop loop;
+    loop.configure(40, 400, Vector3f(20, 20, 10), Vector3f(500, 500, 28.8));
+    loop.configure_estimator(80, 400);
+    LowPassFilter2pVector3f ins_filter;
+    ins_filter.set_cutoff_frequency(400, 20);
+    Vector3f rate, actuator, pred, measured, filtered;
+    const Vector3f desired(.3, -.2, .1), truth_g1(343.6539, 343.6539, 28.8);
+    bool sat = false;
+    unsigned saturated = 0;
+    float peak = 0;
+    for (unsigned k = 0; k < 1600; k++) {
+        const Vector3f output = loop.step(.0025f, ins_filter.apply(rate), actuator,
+            desired, Vector3f(), 1, pred, measured, filtered, sat);
+        saturated += sat;
+        actuator += (output - actuator) * (.0025f / .03f);
+        rate += Vector3f(truth_g1.x * actuator.x, truth_g1.y * actuator.y,
+                         truth_g1.z * actuator.z) * .0025f;
+        peak = MAX(peak, rate.length());
+    }
+    EXPECT_LT((rate - desired).length(), .002);
+    EXPECT_LT(peak, .6);
+    EXPECT_EQ(saturated, 0U);
+}
+
+TEST(INDIRateLoop, YawEffectivenessMustMatchNormalizedUnits)
+{
+    // Same measured-torque law, attitude loop and 30 ms motor in both cells.
+    // The old G1_YAW=1000 is ~35x the actual normalized effectiveness, making
+    // the rate response too slow for the attitude loop. Coordinates alone
+    // cannot explain the instability: the correctly scaled cell converges.
+    float peak[2] {};
+    for (unsigned cell = 0; cell < 2; cell++) {
+        AC_INDI_RateLoop loop;
+        loop.configure(40, 400, Vector3f(20,20,10), Vector3f(500,500,cell ? 1000 : 28.8));
+        loop.configure_estimator(80, 400);
+        LowPassFilter2pVector3f ins;
+        ins.set_cutoff_frequency(400,20);
+        float angle = .05, rate = 0, actuator = 0;
+        Vector3f pred, measured, filtered;
+        bool sat;
+        for (unsigned k = 0; k < 8000; k++) {
+            const Vector3f out = loop.step(.0025, ins.apply(Vector3f(0,0,rate)),
+                Vector3f(0,0,actuator), Vector3f(0,0,-3*angle), Vector3f(),
+                1, pred, measured, filtered, sat);
+            actuator += (out.z - actuator) * (.0025 / .03);
+            rate += 28.8 * actuator * .0025;
+            angle += rate * .0025;
+            peak[cell] = MAX(peak[cell], fabsf(angle));
+        }
+        if (!cell) {
+            EXPECT_LT(fabsf(angle), .001);
+        }
+    }
+    EXPECT_LT(peak[0], .06);
+    EXPECT_GT(peak[1], 1);
+}
+
+// ---- differential-flatness map (outer loop, part 1) ---------------
 // Oracle: indi_harness.flatness._core via tools/gen_flatness_oracle.py
 // (lemniscate_slow samples + synthetic yaw-varying cases, m=1, g=9.81). The
 // pure map reproduces the closed-form q, w (incl w_z), dw_x, dw_y, T; dw.z is
@@ -463,11 +620,11 @@ TEST(INDIOuterLoop, FlatReferenceDegenerateStaysFinite)
     EXPECT_TRUE(std::isfinite(r.T));
 }
 
-// ---- Task B2: linear-INDI outer loop (outer loop, part 2) -----------------
+// ---- linear-INDI outer loop (outer loop, part 2) -----------------
 // Oracle: indi_harness.outer_loop.OuterLoopINDI.update via
 // tools/gen_flatness_oracle.py (kp=6, kv=4, cutoff=8 Hz, fs=500). The firmware
 // LowPassFilter2p biquad is a different filter family than the Python Butter2
-// (as the C1 inner-loop test notes), so we compare at STEADY STATE: drive
+// (as the angular-acceleration feedback inner-loop test notes), so we compare at STEADY STATE: drive
 // constant inputs until both filters settle. Steady state is filter-family
 // independent (both preserve DC), so z_b_des and T_cmd bit-match there. The
 // firmware passes the scalar T_state (thrust/mass) directly in place of the

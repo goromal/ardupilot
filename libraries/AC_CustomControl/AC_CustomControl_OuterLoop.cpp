@@ -5,10 +5,10 @@
 #include "AC_CustomControl_OuterLoop.h"
 #include <cmath>
 
-// --- Layer-B outer loop math (Task B1: differential-flatness map) -----------
+// --- flatness outer-loop math -----------
 // Direct port of indi_harness.flatness._core (NED, thrust along -z_b). All
 // intermediate math in double so the float32 Quaternion/Vector3f I/O still
-// reproduces the float64 Python oracle to < 1e-4 (same approach as the C1
+// reproduces the float64 Python oracle to < 1e-4 (same approach as the angular-acceleration feedback
 // inner-loop port in AC_CustomControl_INDI.cpp).
 namespace {
 
@@ -143,7 +143,7 @@ AC_INDI_OuterLoop::flat_reference(const FlatOutput &fo, float m, float g)
     return r;
 }
 
-// --- Layer-B linear-INDI outer loop (Task B2) ------------------------------
+// --- flatness outer loop linear-INDI outer loop ------------------------------
 // Port of indi_harness.outer_loop.OuterLoopINDI. The two INDI filters share a
 // single cutoff so their group delays match (the accel/thrust analogue of the
 // inner loop's phase-matching rule). Steady state is filter-family independent

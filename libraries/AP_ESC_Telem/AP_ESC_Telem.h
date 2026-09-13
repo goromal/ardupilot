@@ -31,6 +31,10 @@ public:
     // get an individual ESC's slewed rpm if available, returns true on success
     bool get_rpm(uint8_t esc_index, float& rpm) const;
 
+    // Unslewed mechanical RPM with an explicit age bound for control loops.
+    // Monitoring's one-second validity and interpolation are unsuitable here.
+    bool get_rpm_for_control(uint8_t esc_index, float &rpm, uint32_t max_age_us) const;
+
     // get an individual ESC's raw rpm and error rate if available
     bool get_raw_rpm_and_error_rate(uint8_t esc_index, float& rpm, float& error_rate) const;
 

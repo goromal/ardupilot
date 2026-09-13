@@ -10,14 +10,13 @@
 
 bool AP_INDI_RpmSource_ESC::get(uint8_t i, float &omega)
 {
-    float erpm;
-    if (!AP::esc_telem().get_rpm(i, erpm)) {
+    float rpm;
+    if (!AP::esc_telem().get_rpm_for_control(i, rpm, 20000U)) {
         _healthy_last[i] = false;
         return false;
     }
     _healthy_last[i] = true;
-    // eRPM -> mechanical rad/s: rad/s = (erpm / pole_pairs) * 2*pi/60
-    omega = (erpm / _pole_pairs) * (2.0f * M_PI / 60.0f);
+    omega = rpm * (2.0f * M_PI / 60.0f);
     return true;
 }
 
@@ -39,13 +38,15 @@ void AP_INDI_RpmSource_Sim::configure(float qnt, float drop, uint8_t lat_ticks,
     _lat_ticks = lat_ticks;
     _aff_a = aff_a;
     _aff_b = aff_b;
+    for (uint8_t i = 0; i < AP_MOTORS_MAX_NUM_MOTORS; i++) {
+        _ring_head[i] = _ring_pushes[i] = 0;
+        _truth_valid[i] = _healthy_last[i] = false;
+    }
 }
 
-float AP_INDI_RpmSource_Sim::pole_conv(float erpm) const
+float AP_INDI_RpmSource_Sim::rpm_to_omega(float rpm) const
 {
-    // shim assumes pole_pairs == 1: the signal path being modelled is the
-    // eRPM->rad/s conversion itself, not motor-specific pole geometry.
-    return erpm * (2.0f * M_PI / 60.0f);
+    return rpm * (2.0f * M_PI / 60.0f);
 }
 
 float AP_INDI_RpmSource_Sim::draw01()
@@ -70,6 +71,9 @@ bool AP_INDI_RpmSource_Sim::get(uint8_t i, float &omega)
     // the sample from exactly lat_ticks ago, once the line has filled.
     const uint8_t buflen = (uint8_t)MIN((uint16_t)_lat_ticks + 1, (uint16_t)MAX_LAT);
     _ring[i][_ring_head[i]] = q;
+    const bool source_valid = _truth_valid[i];
+    _ring_valid[i][_ring_head[i]] = source_valid;
+    _truth_valid[i] = false;
     _ring_head[i] = (uint8_t)((_ring_head[i] + 1) % buflen);
     const float delayed = _ring[i][_ring_head[i]];
 
@@ -81,11 +85,12 @@ bool AP_INDI_RpmSource_Sim::get(uint8_t i, float &omega)
     // 3) Bernoulli CRC-dropout decision, fresh every tick.
     const bool dropped = (draw01() < _drop);
 
-    const bool healthy_now = have_history && !dropped;
+    const bool healthy_now = source_valid && have_history &&
+        _ring_valid[i][_ring_head[i]] && !dropped;
     _healthy_last[i] = healthy_now;
 
     if (healthy_now) {
-        omega = pole_conv(delayed);
+        omega = rpm_to_omega(delayed);
         _model[i] = omega;   // keep the model warm so fallback doesn't jump
         _fb[i] = false;
     } else {

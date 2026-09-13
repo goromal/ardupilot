@@ -1,4 +1,4 @@
-// Custom flat-output setpoint for the S3 Layer-B INDI outer loop.
+// Custom flat-output setpoint for the flatness outer-loop controller INDI outer loop.
 // Carries a differential-flatness reference {p,v,a,j,s, yaw,yaw_rate,yaw_accel}
 // in the NED world frame, published by the ROS2 trajectory-server and consumed
 // by AC_CustomControl_INDI (CC_TYPE=3, CC3_OUTER_EN=1).

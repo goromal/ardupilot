@@ -209,6 +209,16 @@ bool AP_ESC_Telem::get_rpm(uint8_t esc_index, float& rpm) const
     return false;
 }
 
+bool AP_ESC_Telem::get_rpm_for_control(uint8_t esc_index, float &rpm, uint32_t max_age_us) const
+{
+    if (esc_index >= ESC_TELEM_MAX_ESCS ||
+        !rpm_data_within_timeout(_rpm_data[esc_index], max_age_us)) {
+        return false;
+    }
+    rpm = _rpm_data[esc_index].rpm;
+    return std::isfinite(rpm) && rpm >= 0.0f;
+}
+
 // get an individual ESC's raw rpm if available, returns true on success
 bool AP_ESC_Telem::get_raw_rpm_and_error_rate(uint8_t esc_index, float& rpm, float& error_rate) const
 {

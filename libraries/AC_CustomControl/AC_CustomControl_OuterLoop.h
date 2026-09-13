@@ -7,13 +7,13 @@
 #include <AP_Math/AP_Math.h>
 #include <Filter/LowPassFilter2p.h>
 
-// Layer-B INDI outer loop (design-doc S3). A C++ port of the tested S0 Python
-// reference (indi_harness/{flatness,outer_loop}.py). Part 1 (Task B1) is the
-// pure differential-flatness map FlatOutput -> RefState; Part 2 (Task B2) adds
+// INDI flatness outer loop . A C++ port of the tested offline Python
+// reference (indi_harness/{flatness,outer_loop}.py). Part 1 is the
+// pure differential-flatness map FlatOutput -> RefState; Part 2 adds
 // the linear-INDI position/velocity + thrust-vector-increment loop.
 //
 // Conventions: NED world frame, thrust along -z_b; scalar-first Hamilton
-// quaternions [w,x,y,z] mapping body -> NED (matching the C1 inner-loop port).
+// quaternions [w,x,y,z] mapping body -> NED (matching the angular-acceleration feedback inner-loop port).
 // All intermediate math is done in double so the float32 I/O still reproduces
 // the float64 Python oracle (see tests/test_indi_math.cpp for oracle values).
 class AC_INDI_OuterLoop {
@@ -71,7 +71,7 @@ public:
     //   f_b_meas  : measured body-frame specific force [m/s^2]
     //   T_state   : current thrust-vector-state magnitude / mass [m/s^2] --
     //               the firmware substitute for kf*sum(Omega^2)/m (no RPM in
-    //               SITL; see Task B3/B4 for how it is derived from throttle)
+    //               SITL; see /B4 for how it is derived from throttle)
     //   fo        : flat-output reference (uses p, v, a)
     // Returns the desired body-z direction and the collective thrust [N].
     OuterState update(const Vector3f &p, const Vector3f &v, const Quaternion &q,

@@ -38,7 +38,7 @@ const AP_Param::GroupInfo AC_CustomControl_INDI::var_info[] = {
 
     // @Param: G1_RP
     // @DisplayName: INDI roll/pitch control effectiveness
-    // @Description: G1 diagonal control-effectiveness term for the roll and pitch axes (rad/s^2 per unit actuator increment). With a low-delay angular-accel estimate (OMG_FILT ~80 Hz) the rate loop is stable near the true effectiveness, so this is set to 500 (roll/pitch track cleanly, RATE-gyro buzz < 5 deg/s). The earlier Layer-A value of 1000 was a workaround for the higher-delay estimate (OMG_FILT ~30-40), which limit-cycled at true-effectiveness gains -- raise OMG_FILT before lowering this further. Tune per airframe.
+    // @Description: G1 diagonal control-effectiveness term for the roll and pitch axes (rad/s^2 per unit actuator increment). With a low-delay angular-accel estimate (OMG_FILT ~80 Hz) the rate loop is stable near the true effectiveness, so this is set to 500 (roll/pitch track cleanly, RATE-gyro buzz < 5 deg/s). The earlier legacy INDI rate controller value of 1000 was a workaround for the higher-delay estimate (OMG_FILT ~30-40), which limit-cycled at true-effectiveness gains -- raise OMG_FILT before lowering this further. Tune per airframe.
     // @User: Advanced
     AP_GROUPINFO("G1_RP", 4, AC_CustomControl_INDI, _g1_rp, 500.0f),
 
@@ -69,39 +69,39 @@ const AP_Param::GroupInfo AC_CustomControl_INDI::var_info[] = {
     AP_GROUPINFO("OMG_FILT", 8, AC_CustomControl_INDI, _omg_filt, 80.0f),
 
     // @Param: OUTER_EN
-    // @DisplayName: INDI Layer-B outer loop enable
-    // @Description: Enable the in-firmware INDI outer loop (design-doc S3 Layer B). 0 = stock guided position->attitude outer loop (C1 inner loop as-is). 1 = run the flatness + linear-INDI outer loop off a fresh DDS FlatSetpoint (rt/ap/flat_setpoint), replacing the stock attitude target with (q_ref, w_ff, dw_ff). Falls back to stock when the setpoint is stale/absent.
+    // @DisplayName: INDI flatness outer-loop enable
+    // @Description: Enable the in-firmware INDI outer loop . 0 = stock guided position->attitude outer loop (angular-acceleration feedback inner loop as-is). 1 = run the flatness + linear-INDI outer loop off a fresh DDS FlatSetpoint (rt/ap/flat_setpoint), replacing the stock attitude target with (q_ref, w_ff, dw_ff). Falls back to stock when the setpoint is stale/absent.
     // @Values: 0:Disabled,1:Enabled
     // @User: Advanced
     AP_GROUPINFO("OUTER_EN", 9, AC_CustomControl_INDI, _outer_en, 0),
 
     // @Param: B_KP_XY
     // @DisplayName: INDI outer-loop horizontal position P gain
-    // @Description: Layer-B outer-loop position P gain for the horizontal (roll/pitch) axes: desired accel += kp*(p_ref - p).
+    // @Description: flatness outer-loop position P gain for the horizontal (roll/pitch) axes: desired accel += kp*(p_ref - p).
     // @User: Advanced
     AP_GROUPINFO("B_KP_XY", 10, AC_CustomControl_INDI, _b_kp_xy, 6.0f),
 
     // @Param: B_KP_Z
     // @DisplayName: INDI outer-loop vertical position P gain
-    // @Description: Layer-B outer-loop position P gain for the vertical (z) axis.
+    // @Description: flatness outer-loop position P gain for the vertical (z) axis.
     // @User: Advanced
     AP_GROUPINFO("B_KP_Z", 11, AC_CustomControl_INDI, _b_kp_z, 6.0f),
 
     // @Param: B_KV_XY
     // @DisplayName: INDI outer-loop horizontal velocity P gain
-    // @Description: Layer-B outer-loop velocity P gain for the horizontal (roll/pitch) axes: desired accel += kv*(v_ref - v).
+    // @Description: flatness outer-loop velocity P gain for the horizontal (roll/pitch) axes: desired accel += kv*(v_ref - v).
     // @User: Advanced
     AP_GROUPINFO("B_KV_XY", 12, AC_CustomControl_INDI, _b_kv_xy, 4.0f),
 
     // @Param: B_KV_Z
     // @DisplayName: INDI outer-loop vertical velocity P gain
-    // @Description: Layer-B outer-loop velocity P gain for the vertical (z) axis.
+    // @Description: flatness outer-loop velocity P gain for the vertical (z) axis.
     // @User: Advanced
     AP_GROUPINFO("B_KV_Z", 13, AC_CustomControl_INDI, _b_kv_z, 4.0f),
 
     // @Param: B_ACC_FILT
     // @DisplayName: INDI outer-loop specific-force filter cutoff
-    // @Description: Low-pass cutoff (Hz) shared by the outer loop's two phase-matched INDI filters (measured specific force + thrust-vector state). This sets the outer-loop feedback group delay -- the phase-margin knob. Too high and the thrust-vector INDI increment can become latency-unstable offboard; too low and it degenerates to PD+feedforward with no INDI action. Swept in S3 Layer-B bring-up (Task B5).
+    // @Description: Low-pass cutoff (Hz) shared by the outer loop's two phase-matched INDI filters (measured specific force + thrust-vector state). This sets the outer-loop feedback group delay -- the phase-margin knob. Too high and the thrust-vector INDI increment can become latency-unstable offboard; too low and it degenerates to PD+feedforward with no INDI action. Swept in flatness outer-loop controller bring-up.
     // @Range: 2 40
     // @Units: Hz
     // @User: Advanced
@@ -117,15 +117,15 @@ const AP_Param::GroupInfo AC_CustomControl_INDI::var_info[] = {
 
     // @Param: B_THR_EN
     // @DisplayName: INDI outer-loop collective thrust enable
-    // @Description: When the Layer-B outer loop is active, drive the motor collective throttle from its thrust command (throttle = (T_bar/g)*hover_throttle) so thrust is coordinated with the commanded tilt. 0 = leave the collective to the stock/guided path (the outer loop then commands attitude only, which under-tracks because thrust is not coordinated with tilt).
+    // @Description: When the flatness outer-loop is active, drive the motor collective throttle from its thrust command (throttle = (T_bar/g)*hover_throttle) so thrust is coordinated with the commanded tilt. 0 = leave the collective to the stock/guided path (the outer loop then commands attitude only, which under-tracks because thrust is not coordinated with tilt).
     // @Values: 0:Disabled,1:Enabled
     // @User: Advanced
     AP_GROUPINFO("B_THR_EN", 16, AC_CustomControl_INDI, _b_thr_en, 1),
 
     // @Param: USE_RPM
     // @DisplayName: INDI measured actuator state enable
-    // @Description: 0=previous-command actuator estimate (Layer-A/C1). 1=measured actuator state reconstructed from bidi-eRPM (C2). Falls back to previous-command when RPM telemetry is unhealthy/stale.
-    // @Values: 0:PrevCommand,1:MeasuredRPM
+    // @Description: 0=legacy stock-PID baseline plus INDI correction. 1=measured actuator state reconstructed from RPM (measured-RPM feedback). Falls back to the legacy baseline when RPM is older than 20 ms or unhealthy.
+    // @Values: 0:StockPIDBaseline,1:MeasuredRPM
     // @User: Advanced
     AP_GROUPINFO("USE_RPM", 17, AC_CustomControl_INDI, _use_rpm, 0),
 
@@ -137,7 +137,7 @@ const AP_Param::GroupInfo AC_CustomControl_INDI::var_info[] = {
 
     // @Param: SIM_QNT
     // @DisplayName: INDI RPM shim quantization (SITL only)
-    // @Description: SITL bidi-DShot shim eRPM quantization step (LSB). 0 disables quantization.
+    // @Description: SITL RPM shim quantization step in mechanical RPM (after ESC pole conversion). 0 disables quantization.
     // @User: Advanced
     AP_GROUPINFO("SIM_QNT", 19, AC_CustomControl_INDI, _sim_qnt, 0.0f),
 
@@ -163,7 +163,7 @@ AC_CustomControl_INDI::AC_CustomControl_INDI(AC_CustomControl& frontend, AP_AHRS
     AP_Param::setup_object_defaults(this, var_info);
 }
 
-// --- S0 tilt-prioritized attitude->rate reference (Task 2) -----------------
+// --- offline tilt-prioritized attitude->rate reference -----------------
 // Direct port of indi_harness.tilt_yaw.attitude_rate_ref (scalar-first Hamilton
 // quaternions [w,x,y,z]). All intermediate math is done in double so the
 // float32 Quaternion I/O still reproduces the float64 Python oracle to < 1e-5.
@@ -256,7 +256,7 @@ Vector3f AC_CustomControl_INDI::attitude_rate_ref(const Quaternion &q, const Qua
         float(kt*lr[2] + ky*ly[2] + (double)w_ff.z));
 }
 
-// --- Layer-C Task 4: measured actuator-state reconstruction (torque-space) -
+// --- actuator feedback measured actuator-state reconstruction (torque-space) -
 // Recover the normalized roll/pitch/yaw actuator state (the SAME [-1,1] space
 // as the stock mixer's get_roll/pitch/yaw) from the per-motor normalized rotor
 // thrust omega2_norm[i] = Omega_i^2/Omega_max^2 (== the mixer's per-motor
@@ -286,7 +286,7 @@ void AC_CustomControl_INDI::measured_actuator_torque(const float omega2_norm[4],
     u_meas.z = yf2 > 1e-6f ? rz / yf2 : 0.0f;
 }
 
-// --- Layer-C Task 5: G2 rotor-inertia yaw-reaction correction --------------
+// --- actuator feedback G2 rotor-inertia yaw-reaction correction --------------
 // -g2 * sum(d_i * Omega_dot_i), d=[+1,+1,-1,-1] (motor order [FR,BL,FL,BR],
 // same spin convention as measured_actuator_torque's yaw_f*2).
 float AC_CustomControl_INDI::g2_yaw_correction(const float omega_dot[4], float g2)
@@ -299,7 +299,7 @@ float AC_CustomControl_INDI::g2_yaw_correction(const float omega_dot[4], float g
     return -g2 * s;
 }
 
-// --- Layer-A INDI rate loop (Task 3) ---------------------------------------
+// --- INDI rate loop ---------------------------------------
 
 void AC_INDI_RateLoop::configure(float cutoff_hz, float sample_freq,
                                  const Vector3f &kw, const Vector3f &g1)
@@ -329,7 +329,7 @@ void AC_INDI_RateLoop::reset()
     _have_prev = false;
 }
 
-// C1: select the angular-accel estimator. cutoff_hz > 0 switches step() to
+// angular-acceleration feedback: select the angular-accel estimator. cutoff_hz > 0 switches step() to
 // filter-then-differentiate and re-points the actuator-state filter to the
 // SAME cutoff as the gyro pre-filter (the phase-matching rule -- see the
 // class comment). cutoff_hz == 0 leaves the legacy diff-then-filter filters
@@ -353,7 +353,7 @@ Vector3f AC_INDI_RateLoop::step(float dt, const Vector3f &gyro, const Vector3f &
 {
     // (1) angular-accel estimate.
     if (_use_ftd) {
-        // C1: filter-then-differentiate -- filter the gyro first, then
+        // angular-acceleration feedback: filter-then-differentiate -- filter the gyro first, then
         // difference the filtered signal. Cleaner than differentiating the
         // raw (noisy) gyro and filtering afterwards.
         const Vector3f gyro_f = _f_gyro.apply(gyro);
@@ -426,22 +426,22 @@ Vector3f AC_CustomControl_INDI::update(void)
         _rate_loop_configured = true;
 
         // aff_a/aff_b: shim FALLBACK affine model (omega_target = aff_a*thr + aff_b),
-        // only used when telemetry drops (Task 8 dropout sub-case), NOT the clean path.
+        // only used when telemetry drops, NOT the clean path.
         // Seed aff_a so hover throttle maps ~hover rotor speed; aff_b=0. A rough
-        // constant is fine here (calibrated at Task 8).
+        // constant is fine here for the fallback estimate.
         const float aff_a = 490.0f / 0.3f;  // ~hover omega [rad/s] / hover throttle
         _rpm_shim.configure(_sim_qnt, _sim_drop, (uint8_t)_sim_lat, aff_a, 0.0f);
 
-        // Task 5: per-motor Omega filter (filter-then-diff), same cutoff
+        // per-motor Omega filter (filter-then-diff), same cutoff
         // (CC3_OMG_FILT) as the rate loop's estimator for consistency.
         for (uint8_t i = 0; i < 4; i++) {
             _f_omega[i].set_cutoff_frequency(1.0f / _dt, _omg_filt);
         }
     }
 
-    // Outer loop -> desired body rate via the Task-2 tilt-prioritized reference.
-    // Default: the stock guided position->attitude outer loop (C1 behaviour).
-    // Layer B (CC3_OUTER_EN=1, fresh DDS FlatSetpoint): the in-firmware INDI
+    // Outer loop -> desired body rate via the  tilt-prioritized reference.
+    // Default: the stock guided position->attitude outer loop (angular-acceleration feedback behaviour).
+    // flatness outer loop (CC3_OUTER_EN=1, fresh DDS FlatSetpoint): the in-firmware INDI
     // outer loop supplies (q_ref, w_ff, dw_ff) instead. dw_ff is passed to the
     // rate loop's angular-accel feedforward (5th step() arg).
     Quaternion attitude_body, attitude_target;
@@ -451,7 +451,7 @@ Vector3f AC_CustomControl_INDI::update(void)
     Vector3f w_ff, dw_ff;
     Vector3f log_ref_p, log_meas_p;   // INDB: reference vs measured position
     float log_tcmd = 0.0f;            // INDB: outer-loop collective thrust cmd
-    // Clear the Layer-B attitude override each loop; set only if the outer
+    // Clear the flatness outer loop attitude override each loop; set only if the outer
     // loop runs below (consumed by Copter::update_flight_mode this same loop).
     _ovr_valid = false;
 #if AP_DDS_ENABLED
@@ -544,7 +544,7 @@ Vector3f AC_CustomControl_INDI::update(void)
 #endif // AP_DDS_ENABLED
 
     if (!outer_active) {
-        // Stock guided position->attitude outer loop (C1 behaviour, unchanged):
+        // Stock guided position->attitude outer loop (angular-acceleration feedback behaviour, unchanged):
         // read the stock attitude target + target angular-velocity feedforward.
         attitude_target = _att_control->get_attitude_target_quat();
         const Quaternion rotation_target_to_body = attitude_body.inverse() * attitude_target;
@@ -556,22 +556,19 @@ Vector3f AC_CustomControl_INDI::update(void)
     const Vector3f w_des = attitude_rate_ref(attitude_body, attitude_target,
                                              _kp_tilt, _kp_yaw, w_ff);
 
-    // Inner loop: INDI rate law. Actuator state is the stock mixer's current
-    // torque command (_motors->get_roll/pitch/yaw); outputs are torque-like in
-    // the mixer's [-1, 1] range (S3 Layer-A accepts the stock-mixer limitation).
+    // Stock rate control runs immediately before this backend and overwrites
+    // get_roll/pitch/yaw. The legacy baseline is CURRENT stock PID output,
+    // not our previous applied command. Preserve it for USE_RPM=0/fallback.
     const Vector3f gyro = _ahrs->get_gyro_latest();
     Vector3f u_act(_motors->get_roll(), _motors->get_pitch(), _motors->get_yaw());
-    // DIAGNOSTIC (Task 8 debug): the stock previous-command actuator state,
-    // captured before CC3_USE_RPM overwrites u_act, so the .BIN can compare it
-    // tick-for-tick against the reconstructed measured state (INDC Cx/Cy/Cz vs
-    // Ux/Uy/Uz). Reveals whether the reconstruction recovers the command or a
-    // curve/spin-scaling-distorted version of it.
+    // INDC Cx/Cy/Cz are current stock PID. INDU separately records the previous
+    // custom output and the new one; correlate actuator state with those only
+    // after accounting for mixer compensation, motor lag and sensor delay.
     const Vector3f u_cmd_prev = u_act;
-    // Layer-C Task 4: measured actuator state (CC3_USE_RPM=1). Reconstruct
-    // u_act from per-motor rotor speed instead of the previous mixer command
-    // -- the shipped previous-command estimate is wrong under actuator lag,
-    // which is the limit-cycle root cause this task fixes. Falls back to the
-    // previous-command u_act (above) when RPM telemetry is unhealthy/stale.
+    // actuator feedback measured actuator state (CC3_USE_RPM=1). Reconstruct
+    // u_act from per-motor rotor speed instead of the current stock PID output.
+    // This requires effectiveness gains in the same normalized mixer units.
+    // Falls back to current stock PID u_act when telemetry is unhealthy/stale.
     // The shim's get() MUST be called exactly once per motor per tick (it
     // advances a latency ring + PRNG).
     _rpm_fallback = false;
@@ -581,10 +578,9 @@ Vector3f AC_CustomControl_INDI::update(void)
         float o2n[4];
         bool healthy = true;
         for (uint8_t i = 0; i < 4; i++) {
-            float erpm_esc;
-            if (AP::esc_telem().get_rpm(i, erpm_esc)) {
-                _rpm_shim.set_truth(i, erpm_esc);
-            }
+            float omega_esc = 0.0f;
+            const bool source_ok = _rpm_source.get(i, omega_esc);
+            _rpm_shim.set_truth(i, omega_esc * (60.0f / (2.0f * M_PI)), source_ok);
             _rpm_shim.set_throttle(i, _motors->get_throttle());   // collective 0..1 (base class)
             float omega;
             const bool ok = _rpm_shim.get(i, omega) && _rpm_shim.healthy(i);
@@ -593,7 +589,7 @@ Vector3f AC_CustomControl_INDI::update(void)
             }
             o2n[i] = constrain_float((omega * omega) / _omega2_max, 0.0f, 1.0f);
 
-            // Task 5: Omega_dot_meas, filter-then-diff, computed in this SAME
+            // Omega_dot_meas, filter-then-diff, computed in this SAME
             // single get() pass (a second shim.get() loop would double-advance
             // the shim's latency ring + PRNG).
             omega_log[i] = omega;
@@ -601,7 +597,7 @@ Vector3f AC_CustomControl_INDI::update(void)
             odot_log[i] = _have_prev_omega ? (of - _prev_omega_f[i]) / _dt : 0.0f;
             _prev_omega_f[i] = of;
         }
-        _have_prev_omega = true;
+        _have_prev_omega = healthy;
         if (healthy) {
             // Gather the stock mixer's own per-motor factors so the recovered
             // actuator state lands in the SAME normalized space as get_roll/
@@ -617,7 +613,7 @@ Vector3f AC_CustomControl_INDI::update(void)
             u_meas.z += g2_yaw_correction(odot_log, _g2_yaw);
             u_act = u_meas;
         } else {
-            _rpm_fallback = true;   // keep previous-command u_act
+            _rpm_fallback = true;   // keep current stock PID u_act
         }
     }
     Vector3f domega_pred, domega_filt, u_filt;
@@ -626,13 +622,23 @@ Vector3f AC_CustomControl_INDI::update(void)
                                            domega_pred, domega_filt, u_filt, sat);
 
 #if HAL_LOGGING_ENABLED
-    // INDI health to the .BIN (design-doc L: the .BIN is source of truth).
+    // Ownership/timing diagnostic: stock PID runs BEFORE this backend on the
+    // same tick. P is that current PID output, L the previous custom command,
+    // O the new custom command; R/W are measured/desired body rates [rad/s].
+    AP::logger().Write(
+        "INDU", "TimeUS,Px,Py,Pz,Lx,Ly,Lz,Ox,Oy,Oz,Rx,Ry,Rz,Wx,Wy,Wz",
+        "Qfffffffffffffff", AP_HAL::micros64(),
+        u_cmd_prev.x, u_cmd_prev.y, u_cmd_prev.z,
+        _last_output.x, _last_output.y, _last_output.z,
+        u_cmd.x, u_cmd.y, u_cmd.z,
+        gyro.x, gyro.y, gyro.z, w_des.x, w_des.y, w_des.z);
+    // INDI health to the .BIN .
     // Predicted vs measured/filtered angular accel is the tell for filter/G1
     // mismatch (they should track); the actuator-state estimate and the INDI
     // increment Du = u_cmd - u_filt plus the saturation flag round out the
     // per-loop health picture. Read back by indi_harness read_indi_health().
     // @LoggerMessage: INDI
-    // @Description: Layer-A INDI attitude/rate backend health
+    // @Description: INDI attitude/rate backend health
     // @Field: TimeUS: Time since system startup
     // @Field: Px: predicted angular accel roll
     // @Field: Py: predicted angular accel pitch
@@ -658,13 +664,13 @@ Vector3f AC_CustomControl_INDI::update(void)
         u_cmd.x - u_filt.x, u_cmd.y - u_filt.y, u_cmd.z - u_filt.z,
         (int32_t)sat);
 
-    // Layer-C Task 5: per-motor measured-RPM health (design-doc L). Per-motor
+    // actuator feedback per-motor measured-RPM health . Per-motor
     // Omega and Omega_dot (filter-then-diff, zero on the non-RPM path since
     // the whole CC3_USE_RPM block is skipped), the reconstructed u_act this
-    // tick (previous-command estimate on the non-RPM/fallback path), and the
+    // tick (current stock PID on the non-RPM/fallback path), and the
     // fallback flag. Read back by indi_harness read_indc_health().
     // @LoggerMessage: INDC
-    // @Description: INDI Layer-C C2 measured-RPM health
+    // @Description: INDI measured-RPM feedback measured-RPM health
     // @Field: TimeUS: Time since system startup
     // @Field: O0: measured rotor speed 0 [rad/s]
     // @Field: O1: measured rotor speed 1 [rad/s]
@@ -677,10 +683,10 @@ Vector3f AC_CustomControl_INDI::update(void)
     // @Field: Ux: reconstructed normalized actuator roll
     // @Field: Uy: reconstructed normalized actuator pitch
     // @Field: Uz: reconstructed normalized actuator yaw (incl. G2)
-    // @Field: Cx: stock previous-command actuator roll (diagnostic)
-    // @Field: Cy: stock previous-command actuator pitch (diagnostic)
-    // @Field: Cz: stock previous-command actuator yaw (diagnostic)
-    // @Field: FB: RPM fallback flag (1 = previous-command fallback)
+    // @Field: Cx: current stock PID roll output (diagnostic)
+    // @Field: Cy: current stock PID pitch output (diagnostic)
+    // @Field: Cz: current stock PID yaw output (diagnostic)
+    // @Field: FB: RPM fallback flag (1 = current stock PID fallback)
     AP::logger().Write(
         "INDC", "TimeUS,O0,O1,O2,O3,D0,D1,D2,D3,Ux,Uy,Uz,Cx,Cy,Cz,FB",
         "Qffffffffffffffi",
@@ -690,12 +696,12 @@ Vector3f AC_CustomControl_INDI::update(void)
         u_act.x, u_act.y, u_act.z,
         u_cmd_prev.x, u_cmd_prev.y, u_cmd_prev.z, (int32_t)_rpm_fallback);
 
-    // Layer-B outer-loop health (design-doc L). Reference vs measured position,
+    // flatness outer-loop health . Reference vs measured position,
     // the collective thrust command, and the fallback flag (1 = stock outer
     // loop this tick; the DDS ref was disabled/stale/absent). Read back by
     // indi_harness read_outer_health().
     // @LoggerMessage: INDB
-    // @Description: Layer-B INDI outer-loop health
+    // @Description: flatness outer loop INDI outer-loop health
     // @Field: TimeUS: Time since system startup
     // @Field: RPx: reference position north
     // @Field: RPy: reference position east
@@ -716,6 +722,7 @@ Vector3f AC_CustomControl_INDI::update(void)
         (int32_t)(!outer_active));
 #endif
 
+    _last_output = u_cmd;
     return u_cmd;
 }
 
@@ -727,6 +734,7 @@ void AC_CustomControl_INDI::reset(void)
         _f_omega[i].reset();
     }
     _have_prev_omega = false;
+    _last_output.zero();
 }
 
 bool AC_CustomControl_INDI::get_attitude_override(Quaternion &q_ref, Vector3f &ang_vel_body) const
