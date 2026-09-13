@@ -1,5 +1,5 @@
-// Unit tests for the Layer-A INDI math (design-doc S3), validated against the
-// tested S0 Python reference (indi_harness) used as the oracle. Reference
+// Unit tests for the INDI math , validated against the
+// tested offline Python reference (indi_harness) used as the oracle. Reference
 // vectors were dumped from indi_harness.tilt_yaw.attitude_rate_ref /
 // indi_harness.inner_loop.InnerLoopINDI at build time and hard-coded here.
 #include <AP_gtest.h>
@@ -14,7 +14,7 @@ const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
 #if AP_CUSTOMCONTROL_INDI_ENABLED
 
-// ---- Task 2: tilt-prioritized attitude -> desired body rate ---------------
+// ---- tilt-prioritized attitude -> desired body rate ---------------
 // Oracle: indi_harness.tilt_yaw.attitude_rate_ref (scalar-first [w,x,y,z]).
 
 static void check_rate_ref(const char *name,
@@ -96,9 +96,9 @@ TEST(AC_CustomControl_INDI, yaw_deprioritized)
     EXPECT_LT(wy.z, wr.x);  // yaw correction weaker than tilt at equal error
 }
 
-// ---- Task 3: INDI rate loop (angular-accel + phase-matched actuator filter +
+// ---- INDI rate loop (angular-accel + phase-matched actuator filter +
 // diagonal-G1 inversion) --------------------------------------------------
-// Oracle: /tmp/s3a_dump_inner_oracle.py — a Layer-A reduction of
+// Oracle: /tmp/dump_inner_oracle.py — a legacy INDI rate controller reduction of
 // indi_harness.inner_loop.InnerLoopINDI stepped against a toy first-order-motor
 // plant (mirroring tests/test_inner_loop.py), with a Python replica of
 // ArduPilot's DigitalBiquadFilter so the trajectories match to < 1e-3.
@@ -170,7 +170,7 @@ TEST(AC_CustomControl_INDI, indi_rate_step_matches_oracle)
     }
 }
 
-// The S2 synchronization lesson as a firmware regression: the angular-accel
+// The offboard synchronization lesson as a firmware regression: the angular-accel
 // filter and the actuator-state filter MUST share one cutoff (matched group
 // delay). Structural: the production configure() builds both filters with the
 // same cutoff. Behavioural: a deliberately mismatched loop tracks far worse --
@@ -199,7 +199,7 @@ TEST(AC_CustomControl_INDI, indi_phase_match)
     em /= 20.0f;
     ex /= 20.0f;
     EXPECT_LT(em, 1e-3f);           // matched: tight rate tracking
-    EXPECT_GT(ex, 10.0f * em);      // mismatched: error grows (>10x), the S2 tell
+    EXPECT_GT(ex, 10.0f * em);      // mismatched: error grows (>10x), the offboard tell
 }
 
 // update() returns the INDI increment, and saturation is flagged with
@@ -221,10 +221,10 @@ TEST(AC_CustomControl_INDI, indi_saturation_sheds_yaw)
     EXPECT_NEAR(uc.z, 0.0f, 1e-6f);
 }
 
-// ---- C1: filter-then-differentiate angular-accel estimator ----------------
+// ---- angular-acceleration feedback: filter-then-differentiate angular-accel estimator ----------------
 // Filter-agnostic analytic properties (the C++ LowPassFilter2p biquad is a
 // different filter family than the indi_harness Python Butter2 oracle, so we
-// do not bit-match a per-sample trace -- see the Layer-C plan). Any
+// do not bit-match a per-sample trace -- see the actuator feedback plan). Any
 // DC-preserving low-pass satisfies these regardless of its exact coefficients.
 
 // A constant-angular-accel ramp gyro.x = slope*t must, once the filter has
@@ -290,7 +290,7 @@ TEST(INDIRateLoop, FilterThenDiffConstantGyroZeroDomega)
     }
 }
 
-// ---- Task 4: measured actuator-state reconstruction (torque-space) --------
+// ---- measured actuator-state reconstruction (torque-space) --------
 // Oracle: params.py::mixer() quad-X normalized factors (see the
 // measured_actuator_torque doc comment in AC_CustomControl_INDI.h).
 
@@ -360,7 +360,7 @@ TEST(AC_CustomControl_INDI, measured_actuator_torque_yaw_magnitude)
     EXPECT_NEAR(u.y,  0.0f, 1e-6f);
 }
 
-// ---- Task 5: G2 rotor-inertia yaw-reaction correction ---------------------
+// ---- G2 rotor-inertia yaw-reaction correction ---------------------
 // Oracle: -g2 * sum(d_i * odot_i), d=[+1,+1,-1,-1] (motor order [FR,BL,FL,BR]).
 
 TEST(AC_CustomControl_INDI, g2_yaw_correction_sign)
@@ -371,7 +371,7 @@ TEST(AC_CustomControl_INDI, g2_yaw_correction_sign)
     EXPECT_LT(AC_CustomControl_INDI::g2_yaw_correction(odot_ccw, 0.01f), 0.0f);
 }
 
-// ---- C2/Task 4: RPM-source interface -- SITL shim + staleness fallback ----
+// ---- measured-RPM feedback/RPM-source interface -- SITL shim + staleness fallback ----
 
 // Bernoulli CRC-dropout probability = 1.0: every sample is dropped, so the
 // shim must always report unhealthy and always substitute the first-order
@@ -555,7 +555,7 @@ TEST(INDIRateLoop, YawEffectivenessMustMatchNormalizedUnits)
     EXPECT_GT(peak[1], 1);
 }
 
-// ---- Task B1: differential-flatness map (outer loop, part 1) ---------------
+// ---- differential-flatness map (outer loop, part 1) ---------------
 // Oracle: indi_harness.flatness._core via tools/gen_flatness_oracle.py
 // (lemniscate_slow samples + synthetic yaw-varying cases, m=1, g=9.81). The
 // pure map reproduces the closed-form q, w (incl w_z), dw_x, dw_y, T; dw.z is
@@ -620,11 +620,11 @@ TEST(INDIOuterLoop, FlatReferenceDegenerateStaysFinite)
     EXPECT_TRUE(std::isfinite(r.T));
 }
 
-// ---- Task B2: linear-INDI outer loop (outer loop, part 2) -----------------
+// ---- linear-INDI outer loop (outer loop, part 2) -----------------
 // Oracle: indi_harness.outer_loop.OuterLoopINDI.update via
 // tools/gen_flatness_oracle.py (kp=6, kv=4, cutoff=8 Hz, fs=500). The firmware
 // LowPassFilter2p biquad is a different filter family than the Python Butter2
-// (as the C1 inner-loop test notes), so we compare at STEADY STATE: drive
+// (as the angular-acceleration feedback inner-loop test notes), so we compare at STEADY STATE: drive
 // constant inputs until both filters settle. Steady state is filter-family
 // independent (both preserve DC), so z_b_des and T_cmd bit-match there. The
 // firmware passes the scalar T_state (thrust/mass) directly in place of the

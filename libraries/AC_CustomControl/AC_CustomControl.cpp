@@ -29,7 +29,7 @@ const AP_Param::GroupInfo AC_CustomControl::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("_AXIS_MASK", 2, AC_CustomControl, _custom_controller_mask, 0),
 
-    // parameters for empty controller. only used as a template, no need for param table 
+    // parameters for empty controller. only used as a template, no need for param table
     // AP_SUBGROUPVARPTR(_backend, "1_", 6, AC_CustomControl, _backend_var_info[0]),
 
     // parameters for PID controller
@@ -93,7 +93,7 @@ void AC_CustomControl::update(void)
     }
 }
 
-// Layer-B: fetch the backend's flatness attitude target (if any) so
+// flatness outer loop: fetch the backend's flatness attitude target (if any) so
 // Copter::update_flight_mode can command it to AC_AttitudeControl this loop.
 // Gated on is_safe_to_run() so a stale target is never used once custom control
 // disengages (the backend clears its validity flag at the top of each update()).

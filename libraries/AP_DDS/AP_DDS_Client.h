@@ -92,7 +92,7 @@ public:
 #if AP_DDS_FLAT_SETPOINT_SUB_ENABLED
     // Cached differential-flatness reference (NED world frame) decoded from the
     // latest FlatSetpoint message, plus the arrival time. Consumed by the INDI
-    // Layer-B outer loop (AC_CustomControl_INDI) via get_flat_setpoint().
+    // flatness outer-loop (AC_CustomControl_INDI) via get_flat_setpoint().
     struct FlatRef {
         Vector3f p, v, a, j, s;
         float psi, dpsi, ddpsi;
@@ -258,7 +258,7 @@ private:
     static ardupilot_msgs_msg_GlobalPosition rx_global_position_control_topic;
 #endif // AP_DDS_GLOBAL_POS_CTRL_ENABLED
 #if AP_DDS_FLAT_SETPOINT_SUB_ENABLED
-    // incoming S3 Layer-B flat-output setpoint (NED) for the INDI outer loop
+    // incoming flatness outer-loop controller flat-output setpoint (NED) for the INDI outer loop
     static ardupilot_msgs_msg_FlatSetpoint rx_flat_setpoint_topic;
     // latest received flat reference + arrival timestamp (see get_flat_setpoint)
     FlatRef _flat_ref;
@@ -340,7 +340,7 @@ public:
     AP_DDS_Client();
     ~AP_DDS_Client();
 
-    // Singleton accessor (set in the constructor). Used by the INDI Layer-B
+    // Singleton accessor (set in the constructor). Used by the INDI flatness outer loop
     // backend to reach get_flat_setpoint() without an explicit handle.
     static AP_DDS_Client *get_singleton()
     {

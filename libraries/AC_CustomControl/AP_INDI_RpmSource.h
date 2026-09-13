@@ -7,7 +7,7 @@
 #include <AP_Math/AP_Math.h>
 #include <AP_Motors/AP_Motors_Class.h>   // for AP_MOTORS_MAX_NUM_MOTORS
 
-// Layer-C Task 4: measured per-motor rotor-speed source for the INDI
+// actuator feedback measured per-motor rotor-speed source for the INDI
 // increment (measured actuator state) and the G2 rotor-inertia term.
 //
 // AP_INDI_RpmSource is the abstract interface; two implementations:
